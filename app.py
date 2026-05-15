@@ -132,6 +132,22 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 # =========================
 # UTILITÁRIOS
 # =========================
+
+def limpar_campo_visual(valor, padrao="-"):
+    """Limpa valores vindos do banco para exibição segura no app."""
+    if valor is None:
+        return padrao
+
+    texto = str(valor).strip()
+
+    if not texto or texto.lower() in ["none", "null", "nan"]:
+        return padrao
+
+    if any(s in texto.lower() for s in ["<div", "<p", "<span", "class=", "price-row", "mini-meta"]):
+        return padrao
+
+    return texto
+
 def img_base64(path):
     path = Path(path)
     if not path.exists():
@@ -206,6 +222,11 @@ def is_url(valor):
     return valor.startswith("http://") or valor.startswith("https://")
 
 
+def is_data_image(valor):
+    valor = str(valor or "")
+    return valor.startswith("data:image/")
+
+
 def normalizar_url_imagem(valor):
     """Normaliza URLs/caminhos de foto vindos da Base44, Supabase ou upload local."""
     if not valor:
@@ -222,6 +243,30 @@ def normalizar_url_imagem(valor):
     valor = valor.replace(" ", "%20")
 
     return valor
+
+
+
+def get_foto_perfil_usuario(usuario):
+    """Foto de perfil de usuário/admin. Prioriza foto_perfil_url antes de qualquer outro campo."""
+    if not usuario:
+        return ""
+
+    for campo in [
+        "foto_perfil_url",
+        "perfil_url",
+        "avatar_url",
+        "foto_url",
+        "foto",
+        "imagem",
+        "image_url",
+        "url_foto",
+    ]:
+        valor = usuario.get(campo)
+        valor = normalizar_url_imagem(valor)
+        if valor:
+            return valor
+
+    return ""
 
 
 def get_foto_item(item):
@@ -255,7 +300,7 @@ def foto_src(foto):
     if not foto:
         return ""
 
-    if is_url(foto):
+    if is_data_image(foto) or is_url(foto):
         return foto
 
     p = Path(foto)
@@ -276,11 +321,24 @@ def imagem_html(foto, classe="mini-img"):
     return '<div class="mini-img empty-img">🏎️</div>'
 
 
-def perfil_html(foto):
+def perfil_html(foto, inicial="👤"):
+    """Renderiza avatar circular. Aceita URL pública, data:image/base64 ou arquivo local existente."""
     src = foto_src(foto)
+    inicial = html.escape(str(inicial or "👤")[:1].upper())
+
     if src:
-        return f'<img src="{src}" class="perfil-card-img">'
-    return '<div class="perfil-placeholder">👤</div>'
+        src_safe = html.escape(src, quote=True)
+        return f"""
+        <div class="perfil-avatar-safe">
+            <img src="{src_safe}" loading="lazy" referrerpolicy="no-referrer" alt="Foto de perfil">
+        </div>
+        """
+
+    return f"""
+    <div class="perfil-avatar-safe perfil-avatar-empty">
+        {inicial}
+    </div>
+    """
 
 
 def upload_storage(uploaded_file, pasta, prefixo):
@@ -308,6 +366,39 @@ def upload_storage(uploaded_file, pasta, prefixo):
         return str(arquivo)
 
 
+def upload_perfil_avatar(uploaded_file, pasta="perfis", prefixo="avatar"):
+    """
+    Upload blindado para foto de perfil.
+    Primeiro tenta Supabase Storage. Se o bucket/permissão falhar, grava a imagem
+    como data:image base64 no próprio campo do usuário para o avatar aparecer sempre.
+    """
+    if uploaded_file is None:
+        return ""
+
+    mime = mimetypes.guess_type(uploaded_file.name)[0] or "image/jpeg"
+    dados = uploaded_file.getvalue()
+
+    try:
+        extensao = uploaded_file.name.split(".")[-1].lower()
+        nome = f"{pasta}/{slugify(prefixo)}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}.{extensao}"
+
+        supabase.storage.from_(STORAGE_BUCKET).upload(
+            nome,
+            dados,
+            file_options={"content-type": mime, "upsert": "true"}
+        )
+
+        url_publica = supabase.storage.from_(STORAGE_BUCKET).get_public_url(nome)
+        if url_publica:
+            return str(url_publica)
+
+    except Exception:
+        pass
+
+    b64 = base64.b64encode(dados).decode("utf-8")
+    return f"data:{mime};base64,{b64}"
+
+
 # =========================
 # BANCO / SUPABASE
 # =========================
@@ -331,7 +422,7 @@ def buscar_usuario_por_email(email):
         resp = (
             supabase.table("usuarios")
             .select("*")
-            .eq("email", email.strip())
+            .eq("email", email.strip().lower())
             .execute()
         )
         return resp.data[0] if resp.data else None
@@ -347,8 +438,14 @@ def senha_pendente(usuario):
         or senha in [
             "pendente",
             "123456",
+            "12345",
+            "1234",
             "trocar",
-            "primeiro_acesso"
+            "primeiro_acesso",
+            "primeiro acesso",
+            "senha_pendente",
+            "null",
+            "none"
         ]
     )
 
@@ -359,9 +456,35 @@ def definir_nova_senha(usuario_id, nova_senha):
     }).eq("id", usuario_id).execute()
 
 
+
+def atualizar_foto_perfil(usuario_id, foto_url):
+    foto_url = foto_url or ""
+
+    try:
+        supabase.table("usuarios").update({
+            "foto_perfil_url": foto_url,
+            "foto_url": foto_url
+        }).eq("id", usuario_id).execute()
+        return True
+    except Exception:
+        pass
+
+    try:
+        supabase.table("usuarios").update({
+            "foto_perfil_url": foto_url
+        }).eq("id", usuario_id).execute()
+        return True
+    except Exception:
+        pass
+
+    supabase.table("usuarios").update({
+        "foto_url": foto_url
+    }).eq("id", usuario_id).execute()
+    return True
+
 def atualizar_email_cliente(usuario_id, novo_email):
     supabase.table("usuarios").update({
-        "email": novo_email
+        "email": novo_email.strip().lower()
     }).eq("id", usuario_id).execute()
 
 
@@ -369,6 +492,27 @@ def resetar_senha_cliente(usuario_id):
     supabase.table("usuarios").update({
         "senha": "primeiro_acesso"
     }).eq("id", usuario_id).execute()
+
+
+
+def status_mini(mini):
+    return str(mini.get("status_pagamento") or "").strip().lower()
+
+
+def is_pendente_pagamento(mini):
+    return status_mini(mini) in ["pendente", "solicitado", "aguardando_pix", "reservado"]
+
+
+def total_pendente_pagamento(minis):
+    return sum(
+        float(m.get("valor_pago") or 0)
+        for m in (minis or [])
+        if is_pendente_pagamento(m)
+    )
+
+
+def qtd_pendente_pagamento(minis):
+    return len([m for m in (minis or []) if is_pendente_pagamento(m)])
 
 
 def buscar_minis(usuario_id):
@@ -551,6 +695,37 @@ def atualizar_status(usuario_id, status):
     supabase.table("usuarios").update({"status": status}).eq("id", usuario_id).execute()
 
 
+def excluir_cliente_completo(usuario_id):
+    """Exclui definitivamente um cliente e seus dados vinculados.
+
+    Ordem segura: primeiro remove registros filhos, depois remove o usuário.
+    Usa try/except nos vínculos opcionais para não travar se alguma tabela não existir.
+    """
+    if not usuario_id:
+        return False, "Cliente inválido."
+
+    try:
+        supabase.table("minis").delete().eq("usuario_id", usuario_id).execute()
+    except Exception:
+        pass
+
+    try:
+        supabase.table("pedidos").delete().eq("usuario_id", usuario_id).execute()
+    except Exception:
+        pass
+
+    try:
+        supabase.table("scanner_logs").delete().eq("usuario_id", usuario_id).execute()
+    except Exception:
+        pass
+
+    try:
+        supabase.table("usuarios").delete().eq("id", usuario_id).execute()
+        return True, "Cliente excluído definitivamente da GarageHub."
+    except Exception as e:
+        return False, f"Erro ao excluir cliente: {e}"
+
+
 def criar_usuario(nome, email, senha, telefone, cidade, estado, instagram, foto_perfil_url, codigo_convite=""):
     if not nome or not email or not senha:
         return False, "Preencha nome, e-mail e senha."
@@ -558,8 +733,8 @@ def criar_usuario(nome, email, senha, telefone, cidade, estado, instagram, foto_
     codigo_membro = f"GHW-{datetime.now().strftime('%Y%m%d%H%M%S')}"
     dados = {
         "nome": nome.strip(),
-        "email": email.strip(),
-        "senha": senha,
+        "email": email.strip().lower(),
+        "senha": "primeiro_acesso",
         "tipo": "usuario",
         "status": "ativo",
         "codigo_membro": codigo_membro,
@@ -584,16 +759,16 @@ def criar_usuario(nome, email, senha, telefone, cidade, estado, instagram, foto_
 
 
 def criar_cliente_admin(nome, email, senha, telefone, cidade, estado, instagram, foto_perfil_url):
-    if not nome or not email or not senha:
-        return False, "Preencha nome, e-mail e senha do cliente."
+    if not nome or not email:
+        return False, "Preencha nome e e-mail do cliente."
 
     codigo_membro = f"GHW-{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
     try:
         supabase.table("usuarios").insert({
             "nome": nome.strip(),
-            "email": email.strip(),
-            "senha": senha,
+            "email": email.strip().lower(),
+            "senha": "primeiro_acesso",
             "tipo": "usuario",
             "status": "ativo",
             "codigo_membro": codigo_membro,
@@ -604,11 +779,149 @@ def criar_cliente_admin(nome, email, senha, telefone, cidade, estado, instagram,
             "foto_perfil_url": foto_perfil_url or "",
             "nivel_cliente": "comum"
         }).execute()
-        return True, "Cliente criado com sucesso."
+        return True, "Cliente criado com sucesso. No primeiro acesso ele deverá criar a própria senha."
     except Exception as e:
         return False, f"Erro ao criar cliente: {e}"
 
 
+
+
+
+# =========================
+# ADMIN — GARAGEM DO CLIENTE
+# =========================
+def render_admin_garagem_cliente(usuario_cliente):
+    st.markdown(f"""
+    <div class="admin-work-card">
+        <h3>🚗 Garagem de {html.escape(str(usuario_cliente.get("nome") or "Cliente"))}</h3>
+        <p>Edite minis, valores, raridade, status e informações da coleção deste cliente.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if st.button("⬅️ Voltar para usuários", use_container_width=True, key="voltar_admin_usuarios"):
+        st.session_state.pop("admin_cliente_garagem_id", None)
+        st.rerun()
+
+    minis_cliente = buscar_minis(usuario_cliente.get("id"))
+
+    if not minis_cliente:
+        st.info("Este cliente ainda não possui minis cadastrados.")
+        return
+
+    busca_admin = st.text_input(
+        "Buscar mini deste cliente",
+        placeholder="Digite nome, marca ou série...",
+        key=f"admin_busca_mini_cliente_{usuario_cliente.get('id')}"
+    ).strip().lower()
+
+    if busca_admin:
+        minis_cliente = [
+            m for m in minis_cliente
+            if busca_admin in str(m.get("nome") or "").lower()
+            or busca_admin in str(m.get("marca") or "").lower()
+            or busca_admin in str(m.get("serie") or "").lower()
+        ]
+
+    st.caption(f"Exibindo {len(minis_cliente)} mini(s) deste cliente.")
+
+    for mini in minis_cliente:
+        mini_id = mini.get("id")
+        nome_atual = limpar_campo_visual(mini.get("nome"), "Mini sem nome")
+        marca_atual = limpar_campo_visual(mini.get("marca"), "")
+        serie_atual = limpar_campo_visual(mini.get("serie"), "")
+        ano_atual = limpar_campo_visual(mini.get("ano"), "")
+        raridade_atual = limpar_campo_visual(mini.get("raridade"), "Comum")
+        status_atual = limpar_campo_visual(mini.get("status_pagamento"), "pendente")
+        tipo_atual = limpar_campo_visual(mini.get("tipo_mini"), "compra")
+        destaque_atual = limpar_campo_visual(mini.get("destaque_cliente"), "")
+        foto_atual = get_foto_item(mini)
+
+        with st.expander(f"🚗 {nome_atual} — {money(mini.get('valor_estimado') or 0)}", expanded=False):
+            col_foto, col_form = st.columns([0.9, 2.1])
+
+            with col_foto:
+                src_foto = foto_src(foto_atual)
+                if src_foto:
+                    st.markdown(
+                        f"""
+                        <div class="garage-photo-box">
+                            <img src="{html.escape(src_foto, quote=True)}" loading="lazy" referrerpolicy="no-referrer">
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+                else:
+                    st.markdown("<div class='garage-photo-box garage-empty'>🏎️</div>", unsafe_allow_html=True)
+
+                nova_foto = st.file_uploader("Trocar foto", type=["png", "jpg", "jpeg"], key=f"admin_foto_mini_{mini_id}")
+
+            with col_form:
+                c1, c2 = st.columns(2)
+
+                with c1:
+                    novo_nome = st.text_input("Nome", value=nome_atual, key=f"admin_nome_mini_{mini_id}")
+                    nova_marca = st.text_input("Marca", value=marca_atual, key=f"admin_marca_mini_{mini_id}")
+                    nova_serie = st.text_input("Série", value=serie_atual, key=f"admin_serie_mini_{mini_id}")
+                    novo_ano = st.text_input("Ano", value=ano_atual, key=f"admin_ano_mini_{mini_id}")
+
+                with c2:
+                    opcoes_raridade = ["Comum", "TH", "STH", "Premium", "RLC", "Chase", "Especial", "Limitado", "Não identificado"]
+                    idx_raridade = opcoes_raridade.index(raridade_atual) if raridade_atual in opcoes_raridade else 0
+                    nova_raridade = st.selectbox("Raridade", opcoes_raridade, index=idx_raridade, key=f"admin_raridade_mini_{mini_id}")
+
+                    novo_valor_pago = st.number_input("Valor pago", min_value=0.0, step=1.0, value=float(mini.get("valor_pago") or 0), key=f"admin_valor_pago_mini_{mini_id}")
+                    novo_valor_estimado = st.number_input("Valor estimado", min_value=0.0, step=1.0, value=float(mini.get("valor_estimado") or 0), key=f"admin_valor_estimado_mini_{mini_id}")
+
+                    opcoes_status = ["pendente", "pago", "reservado", "cancelado"]
+                    idx_status = opcoes_status.index(status_atual.lower()) if status_atual.lower() in opcoes_status else 0
+                    novo_status = st.selectbox("Status pagamento", opcoes_status, index=idx_status, key=f"admin_status_mini_{mini_id}")
+
+                opcoes_tipo = ["compra", "scanner", "presente", "troca", "colecao"]
+                idx_tipo = opcoes_tipo.index(tipo_atual.lower()) if tipo_atual.lower() in opcoes_tipo else 0
+                novo_tipo = st.selectbox("Tipo da mini", opcoes_tipo, index=idx_tipo, key=f"admin_tipo_mini_{mini_id}")
+
+                novo_destaque = st.text_area("Destaque / observação", value=destaque_atual, key=f"admin_destaque_mini_{mini_id}")
+
+                b1, b2 = st.columns(2)
+
+                with b1:
+                    if st.button("💾 Salvar alterações", use_container_width=True, key=f"admin_salvar_mini_{mini_id}"):
+                        dados_update = {
+                            "nome": novo_nome,
+                            "marca": nova_marca,
+                            "serie": nova_serie,
+                            "ano": novo_ano,
+                            "raridade": nova_raridade,
+                            "valor_pago": float(novo_valor_pago or 0),
+                            "valor_estimado": float(novo_valor_estimado or 0),
+                            "status_pagamento": novo_status,
+                            "tipo_mini": novo_tipo,
+                            "destaque_cliente": novo_destaque
+                        }
+
+                        if nova_foto is not None:
+                            foto_url = upload_storage(nova_foto, "minis", f"admin_cliente_{usuario_cliente.get('id')}_mini_{mini_id}")
+                            dados_update["foto_url"] = foto_url
+
+                        try:
+                            atualizar_mini(mini_id, dados_update)
+                            st.success("Mini atualizada com sucesso.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro ao atualizar mini: {e}")
+
+                with b2:
+                    confirmar_excluir = st.checkbox("Confirmar exclusão", key=f"admin_confirmar_excluir_mini_{mini_id}")
+                    if st.button("🗑️ Excluir mini", use_container_width=True, key=f"admin_excluir_mini_{mini_id}"):
+                        if not confirmar_excluir:
+                            st.warning("Marque confirmar exclusão antes de apagar.")
+                        else:
+                            try:
+                                excluir_mini(mini_id)
+                                st.success("Mini excluída com sucesso.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Erro ao excluir mini: {e}")
 
 
 # =========================
@@ -1266,6 +1579,32 @@ label,
 }
 .member-top h1 { color: var(--gold); margin: 0; font-size: 38px; }
 .member-sub { color: #cbd5e1; margin-top: 4px; font-weight: 800; }
+
+.perfil-avatar-safe {
+    width: 124px;
+    height: 124px;
+    border-radius: 999px;
+    overflow: hidden;
+    border: 3px solid var(--gold);
+    box-shadow: 0 0 26px rgba(250,204,21,.32);
+    background: #111827;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #facc15;
+    font-size: 44px;
+    font-weight: 950;
+}
+.perfil-avatar-safe img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+.perfil-avatar-empty {
+    background: radial-gradient(circle at 35% 25%, rgba(250,204,21,.18), rgba(15,23,42,.98));
+}
+
 .perfil-card-img, .perfil-placeholder {
     width: 124px;
     height: 124px;
@@ -2416,6 +2755,103 @@ div[data-testid="stExpander"] div[data-testid="stExpanderDetails"] {
     }
 }
 
+
+
+/* =========================
+   MINHA GARAGEM — FOTO CONTROLADA EM CARD
+   ========================= */
+.garage-photo-box {
+    width: 100% !important;
+    height: 190px !important;
+    max-height: 190px !important;
+    background: #020617 !important;
+    border: 1px solid rgba(148,163,184,.18) !important;
+    border-radius: 18px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    overflow: hidden !important;
+    margin-bottom: 12px !important;
+}
+
+.garage-photo-box img {
+    width: 100% !important;
+    height: 100% !important;
+    max-height: 190px !important;
+    object-fit: contain !important;
+    object-position: center !important;
+    display: block !important;
+}
+
+.garage-empty {
+    font-size: 54px !important;
+}
+
+@media (max-width: 720px) {
+    .garage-photo-box {
+        height: 170px !important;
+        max-height: 170px !important;
+    }
+
+    .garage-photo-box img {
+        max-height: 170px !important;
+    }
+}
+
+
+
+/* =========================
+   ADMIN GARAGEM CLIENTE
+   ========================= */
+.garage-photo-box {
+    width: 100% !important;
+    height: 190px !important;
+    max-height: 190px !important;
+    background: #020617 !important;
+    border: 1px solid rgba(148,163,184,.18) !important;
+    border-radius: 18px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    overflow: hidden !important;
+    margin-bottom: 12px !important;
+}
+.garage-photo-box img {
+    width: 100% !important;
+    height: 100% !important;
+    max-height: 190px !important;
+    object-fit: contain !important;
+    object-position: center !important;
+    display: block !important;
+}
+.garage-empty { font-size: 54px !important; }
+
+
+
+/* =========================
+   CARD FINANCEIRO — PENDENTES
+   ========================= */
+.metric-pendente {
+    border-color: rgba(250,204,21,.45) !important;
+    background:
+        radial-gradient(circle at top left, rgba(250,204,21,.18), transparent 34%),
+        linear-gradient(145deg, rgba(120,53,15,.38), rgba(2,6,23,.96)) !important;
+}
+
+.metric-pendente small {
+    display: block;
+    margin-top: 6px;
+    color: #fde68a;
+    font-weight: 950;
+    font-size: 13px;
+}
+
+@media (max-width: 900px) {
+    .metric-card h2 {
+        font-size: 26px !important;
+    }
+}
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -2809,18 +3245,78 @@ if st.session_state.usuario is None:
             email = st.text_input("E-mail", key="login_email", placeholder="seuemail@exemplo.com")
             senha = st.text_input("Senha", type="password", key="login_senha", placeholder="Digite sua senha")
 
-            if st.button("Entrar na GarageHub", key="btn_login", use_container_width=True):
+            col_login_1, col_login_2, col_login_3 = st.columns(3)
+
+            with col_login_1:
+                entrar = st.button("Entrar na GarageHub", use_container_width=True)
+
+            with col_login_2:
+                primeiro_acesso = st.button("🔐 Primeiro acesso", use_container_width=True)
+
+            with col_login_3:
+                esqueci_senha = st.button("🔁 Esqueci minha senha", use_container_width=True)
+
+            if esqueci_senha:
+                if not email:
+                    st.error("Informe seu e-mail para recuperar a senha.")
+                    st.stop()
+
+                usuario = buscar_usuario_por_email(email)
+
+                if not usuario:
+                    st.error("E-mail não encontrado. Peça ao admin para corrigir seu cadastro.")
+                    st.stop()
+
+                try:
+                    resetar_senha_cliente(usuario["id"])
+                    usuario["senha"] = "primeiro_acesso"
+                    st.session_state["usuario_primeiro_acesso"] = usuario
+                    st.success("Senha resetada. Agora crie uma nova senha.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao resetar senha: {e}")
+                    st.stop()
+
+            if primeiro_acesso:
+                if not email:
+                    st.error("Informe seu e-mail.")
+                    st.stop()
+
+                usuario = buscar_usuario_por_email(email)
+
+                if not usuario:
+                    st.error("E-mail não encontrado. Peça ao admin para corrigir seu cadastro.")
+                    st.stop()
+
+                if senha_pendente(usuario):
+                    st.session_state["usuario_primeiro_acesso"] = usuario
+                    st.rerun()
+
+                st.info("Sua conta já possui senha cadastrada. Use sua senha para entrar.")
+
+            if entrar:
+                if not email:
+                    st.error("Informe seu e-mail.")
+                    st.stop()
+
+                usuario = buscar_usuario_por_email(email)
+
+                if not usuario:
+                    st.error("E-mail não encontrado.")
+                    st.stop()
+
+                if senha_pendente(usuario):
+                    st.session_state["usuario_primeiro_acesso"] = usuario
+                    st.rerun()
+
                 usuario = login(email, senha)
+
                 if usuario:
-                    if usuario.get("status") != "ativo":
-                        st.error("Sua garagem está bloqueada. Fale com o administrador.")
-                    else:
-                        st.session_state.usuario = usuario
-                        st.rerun()
+                    st.session_state["usuario"] = usuario
+                    st.rerun()
                 else:
                     st.error("E-mail ou senha inválidos.")
 
-            st.markdown('<div class="login-note">ADM inicial: <b>admin@garagehub.com</b> / <b>admin123</b></div>', unsafe_allow_html=True)
 
     with aba_cadastro:
         _l, cad_col, _r = st.columns([0.35, 1.5, 0.35])
@@ -2849,7 +3345,7 @@ if st.session_state.usuario is None:
             foto_perfil = st.file_uploader("Foto de perfil", type=["jpg", "jpeg", "png"], key="cad_foto_perfil")
 
             if st.button("Criar minha garagem", key="btn_cadastro", use_container_width=True):
-                foto_url = upload_storage(foto_perfil, "perfis", novo_email)
+                foto_url = upload_perfil_avatar(foto_perfil, "perfis", novo_email)
                 ok, msg = criar_usuario(nome, novo_email, nova_senha, telefone, cidade, estado, instagram, foto_url)
                 if ok:
                     st.success(msg)
@@ -2957,13 +3453,27 @@ else:
                     adm_foto = st.file_uploader("Foto do cliente", type=["jpg", "jpeg", "png"], key="adm_cliente_foto")
 
                 if st.button("Criar cliente", key="btn_criar_cliente_admin"):
-                    foto_cliente = upload_storage(adm_foto, "perfis", adm_email)
+                    foto_cliente = upload_perfil_avatar(adm_foto, "perfis", adm_email)
                     ok, msg = criar_cliente_admin(adm_nome, adm_email, adm_senha, adm_tel, adm_cidade, adm_estado, adm_insta, foto_cliente)
                     if ok:
                         st.success(msg)
                         st.rerun()
                     else:
                         st.error(msg)
+
+            if st.session_state.get("admin_cliente_garagem_id"):
+                cliente_aberto = next(
+                    (u for u in usuarios if str(u.get("id")) == str(st.session_state.get("admin_cliente_garagem_id"))),
+                    None
+                )
+
+                if cliente_aberto:
+                    render_admin_garagem_cliente(cliente_aberto)
+                    st.stop()
+                else:
+                    st.session_state.pop("admin_cliente_garagem_id", None)
+                    st.warning("Cliente não encontrado.")
+                    st.stop()
 
             st.subheader("Usuários cadastrados")
 
@@ -2978,7 +3488,7 @@ else:
 
                 col_foto, col_dados = st.columns([1, 5], gap="large")
                 with col_foto:
-                    st.markdown('<div class="admin-avatar-wrap">' + perfil_html(get_foto_item(u)) + '</div>', unsafe_allow_html=True)
+                    st.markdown('<div class="admin-avatar-wrap">' + perfil_html(get_foto_perfil_usuario(u), u.get('nome', '')) + '</div>', unsafe_allow_html=True)
                 with col_dados:
                     st.markdown(f"""
                     <div class="user-card">
@@ -3004,7 +3514,7 @@ else:
                     </div>
                     """, unsafe_allow_html=True)
 
-                    c1, c2, c3, c4 = st.columns([1, 1, 1, 3])
+                    c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
                     with c1:
                         if st.button("✅ Liberar", key=f"liberar_{u['id']}"):
                             atualizar_status(u["id"], "ativo")
@@ -3030,8 +3540,74 @@ else:
                                         st.rerun()
                                     except Exception:
                                         st.error("Campo nivel_cliente não existe. Rode o SQL informado.")
+
                     with c4:
-                        st.write("")
+                        if u.get("tipo") != "admin":
+                            if st.button("🚗 Abrir garagem", key=f"abrir_garagem_{u['id']}"):
+                                st.session_state["admin_cliente_garagem_id"] = u["id"]
+                                st.rerun()
+
+                    if u.get("tipo") != "admin":
+                        with st.expander("🗑️ Excluir cliente definitivamente", expanded=False):
+                            st.warning(
+                                "Atenção: esta ação apaga o cliente, as minis, os pedidos e logs vinculados. "
+                                "Depois de confirmar, não tem volta."
+                            )
+
+                            texto_confirmacao = st.text_input(
+                                "Digite EXCLUIR para confirmar",
+                                key=f"texto_excluir_cliente_{u['id']}"
+                            )
+
+                            confirmar_excluir_cliente = st.checkbox(
+                                "Confirmo que quero excluir este cliente definitivamente",
+                                key=f"confirmar_excluir_cliente_{u['id']}"
+                            )
+
+                            if st.button(
+                                "🗑️ Excluir cliente",
+                                key=f"excluir_cliente_{u['id']}",
+                                use_container_width=True
+                            ):
+                                if not confirmar_excluir_cliente or texto_confirmacao.strip().upper() != "EXCLUIR":
+                                    st.error("Para excluir, marque a confirmação e digite EXCLUIR.")
+                                else:
+                                    ok, msg = excluir_cliente_completo(u["id"])
+                                    if ok:
+                                        if str(st.session_state.get("admin_cliente_garagem_id")) == str(u["id"]):
+                                            st.session_state.pop("admin_cliente_garagem_id", None)
+                                        st.success(msg)
+                                        st.rerun()
+                                    else:
+                                        st.error(msg)
+
+                    with st.expander("🖼️ Alterar foto do usuário", expanded=False):
+                        foto_salva_atual = get_foto_perfil_usuario(u)
+                        if foto_salva_atual:
+                            st.caption("Foto atual cadastrada no perfil.")
+                        else:
+                            st.caption("Ainda não há foto cadastrada neste perfil.")
+
+                        nova_foto_usuario_admin = st.file_uploader(
+                            "Enviar nova foto",
+                            type=["jpg", "jpeg", "png"],
+                            key=f"admin_upload_foto_usuario_{u['id']}"
+                        )
+
+                        if st.button("💾 Salvar foto do usuário", key=f"admin_salvar_foto_usuario_{u['id']}", use_container_width=True):
+                            if nova_foto_usuario_admin is None:
+                                st.warning("Escolha uma imagem primeiro.")
+                            else:
+                                foto_url = upload_perfil_avatar(
+                                    nova_foto_usuario_admin,
+                                    "perfis",
+                                    f"admin_perfil_{u['id']}"
+                                )
+                                atualizar_foto_perfil(u["id"], foto_url)
+                                u["foto_perfil_url"] = foto_url
+                                u["foto_url"] = foto_url
+                                st.success("Foto atualizada. Ela aparecerá no círculo do perfil.")
+                                st.rerun()
 
         # =========================
         # ABA LOJA
@@ -3661,7 +4237,7 @@ else:
                     <h1>🏁 GarageHub</h1>
                     <p class="member-sub">Comunidade Garagem Hot Wheels</p>
                 </div>
-                <div>{perfil_html(get_foto_item(usuario))}</div>
+                <div>{perfil_html(get_foto_perfil_usuario(usuario), usuario.get('nome', ''))}</div>
             </div>
             <div class="member-info">
                 <p><span>Nome:</span> {html.escape(str(usuario.get('nome', '')))}</p>
@@ -4046,8 +4622,10 @@ else:
                 total_estimado = sum(float(m.get("valor_estimado") or 0) for m in minis)
                 valorizacao_total = total_estimado - total_pago
                 rlc_sth = len([m for m in minis if m.get("raridade") in ["RLC", "STH", "Chase"]])
+                minis_pendentes = qtd_pendente_pagamento(minis)
+                valor_pendente = total_pendente_pagamento(minis)
 
-                m1, m2, m3, m4 = st.columns(4)
+                m1, m2, m3, m4, m5 = st.columns(5)
                 with m1:
                     st.markdown(f'<div class="metric-card"><h2>{total_minis}</h2><p>Minis</p></div>', unsafe_allow_html=True)
                 with m2:
@@ -4056,6 +4634,8 @@ else:
                     st.markdown(f'<div class="metric-card"><h2>{money(total_estimado)}</h2><p>Estimado</p></div>', unsafe_allow_html=True)
                 with m4:
                     st.markdown(f'<div class="metric-card"><h2>{money(valorizacao_total)}</h2><p>Valorização</p></div>', unsafe_allow_html=True)
+                with m5:
+                    st.markdown(f'<div class="metric-card metric-pendente"><h2>{minis_pendentes}</h2><p>Pendentes</p><small>{money(valor_pendente)}</small></div>', unsafe_allow_html=True)
 
                 st.markdown("#### Filtros")
                 f1, f2, f3 = st.columns([2, 1, 1])
@@ -4096,53 +4676,77 @@ else:
                     texto = re.sub(r"<[^>]*>", "", texto)
                     return html.unescape(texto).strip() or padrao
 
-                for mini in filtrados:
-                    nome = limpar_campo_visual(mini.get("nome"), "Mini sem nome")
-                    marca = limpar_campo_visual(mini.get("marca"), "-")
-                    serie = limpar_campo_visual(mini.get("serie"), "-")
-                    ano = limpar_campo_visual(mini.get("ano"), "-")
-                    raridade = limpar_campo_visual(mini.get("raridade"), "Comum")
-                    status_pagamento = limpar_campo_visual(mini.get("status_pagamento"), "pendente").upper()
-                    tipo_mini = limpar_campo_visual(mini.get("tipo_mini"), "compra").upper()
-                    destaque_cliente = limpar_campo_visual(mini.get("destaque_cliente"), "")
-                    valor_pago = float(mini.get("valor_pago") or 0)
-                    valor_estimado = float(mini.get("valor_estimado") or 0)
-                    valorizacao = valor_estimado - valor_pago
-                    foto = str(get_foto_item(mini) or "")
-                    if any(s in foto.lower() for s in ["<div", "<p", "class=", "mini-meta", "price-row"]):
-                        foto = ""
+                if not filtrados:
+                    st.warning("Nenhuma mini encontrada com esses filtros.")
+                else:
+                    for i in range(0, len(filtrados), 3):
+                        cols_mini = st.columns(3)
 
-                    with st.container(border=True):
-                        src = foto_src(foto)
-                        if src:
-                            st.image(src, use_container_width=True)
-                        else:
-                            st.markdown("<div class='empty-img'>🏎️</div>", unsafe_allow_html=True)
+                        for col_mini, mini in zip(cols_mini, filtrados[i:i+3]):
+                            with col_mini:
+                                nome = limpar_campo_visual(mini.get("nome"), "Mini sem nome")
+                                marca = limpar_campo_visual(mini.get("marca"), "-")
+                                serie = limpar_campo_visual(mini.get("serie"), "-")
+                                ano = limpar_campo_visual(mini.get("ano"), "-")
+                                raridade = limpar_campo_visual(mini.get("raridade"), "Comum")
+                                status_pagamento = limpar_campo_visual(mini.get("status_pagamento"), "pendente").upper()
+                                tipo_mini = limpar_campo_visual(mini.get("tipo_mini"), "compra").upper()
+                                destaque_cliente = limpar_campo_visual(mini.get("destaque_cliente"), "")
+                                valor_pago = float(mini.get("valor_pago") or 0)
+                                valor_estimado = float(mini.get("valor_estimado") or 0)
+                                valorizacao = valor_estimado - valor_pago
+                                foto = str(get_foto_item(mini) or "")
 
-                        st.markdown(f"### {html.escape(nome)}")
-                        badge_html = f'''
-                        <span class="badge-raridade badge-{html.escape(raridade)}">{html.escape(raridade)}</span>
-                        <span class="badge-status badge-status-{html.escape(status_pagamento.lower())}">{html.escape(status_pagamento)}</span>
-                        <span class="badge-tipo">{html.escape(tipo_mini)}</span>
-                        '''
-                        if destaque_cliente:
-                            badge_html += f'<span class="badge-destaque">{html.escape(destaque_cliente)}</span>'
-                        st.markdown(badge_html, unsafe_allow_html=True)
+                                if any(s in foto.lower() for s in ["<div", "<p", "class=", "mini-meta", "price-row"]):
+                                    foto = ""
 
-                        c_info1, c_info2, c_info3 = st.columns(3)
-                        c_info1.markdown(f"**Marca:** {html.escape(marca)}")
-                        c_info2.markdown(f"**Série:** {html.escape(serie)}")
-                        c_info3.markdown(f"**Ano:** {html.escape(ano)}")
+                                with st.container(border=True):
+                                    src_foto = foto_src(foto)
 
-                        # Cards de valor sem st.metric (evita erro de módulo dinâmico do Streamlit no navegador)
-                        classe_val = "valor-pos" if valorizacao >= 0 else "valor-neg"
-                        st.markdown(f"""
-                        <div class="price-row" style="margin-top:16px;">
-                            <div class="price-box"><small>Pago</small><strong>{money(valor_pago)}</strong></div>
-                            <div class="price-box"><small>Estimado</small><strong>{money(valor_estimado)}</strong></div>
-                            <div class="price-box"><small>Valorização</small><strong class="{classe_val}">{money(valorizacao)}</strong></div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                                    if src_foto:
+                                        st.markdown(
+                                            f"""
+                                            <div class="garage-photo-box">
+                                                <img src="{html.escape(src_foto, quote=True)}" loading="lazy" referrerpolicy="no-referrer">
+                                            </div>
+                                            """,
+                                            unsafe_allow_html=True
+                                        )
+                                    else:
+                                        st.markdown(
+                                            "<div class='garage-photo-box garage-empty'>🏎️</div>",
+                                            unsafe_allow_html=True
+                                        )
+
+                                    st.markdown(f"### {html.escape(nome)}")
+
+                                    badge_html = f"""
+                                    <span class="badge-raridade badge-{html.escape(raridade)}">{html.escape(raridade)}</span>
+                                    <span class="badge-status badge-status-{html.escape(status_pagamento.lower())}">{html.escape(status_pagamento)}</span>
+                                    <span class="badge-tipo">{html.escape(tipo_mini)}</span>
+                                    """
+
+                                    if destaque_cliente:
+                                        badge_html += f'<span class="badge-destaque">{html.escape(destaque_cliente)}</span>'
+
+                                    st.markdown(badge_html, unsafe_allow_html=True)
+
+                                    st.markdown(f"**Marca:** {html.escape(marca)}")
+                                    st.markdown(f"**Série:** {html.escape(serie)}")
+                                    st.markdown(f"**Ano:** {html.escape(ano)}")
+
+                                    classe_val = "valor-pos" if valorizacao >= 0 else "valor-neg"
+
+                                    st.markdown(f"""
+                                    <div class="price-row" style="margin-top:16px;">
+                                        <div class="price-box"><small>Pago</small><strong>{money(valor_pago)}</strong></div>
+                                        <div class="price-box"><small>Estimado</small><strong>{money(valor_estimado)}</strong></div>
+                                    </div>
+                                    <div class="price-box" style="margin-top:10px;">
+                                        <small>Valorização</small>
+                                        <strong class="{classe_val}">{money(valorizacao)}</strong>
+                                    </div>
+                                    """, unsafe_allow_html=True)
 
                 st.divider()
                 st.info("A sua garagem é oficial: somente o admin pode incluir, alterar ou remover minis compradas/presentes.")

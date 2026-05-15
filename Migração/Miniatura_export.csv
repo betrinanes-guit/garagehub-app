@@ -1,0 +1,4 @@
+cliente,carro,foto_url,pagamento,status,id,created_date,updated_date,created_by_id,created_by,is_sample
+"Diego Cavalcanti ","Layout lowrider","https://base44.app/api/apps/69f36c3068d6d60b163e7433/files/mp/public/69f36c3068d6d60b163e7433/274f2d01b_image.jpg","Pago","Na garagem","69f370521d0484bb5633d89e","2026-04-30T15:08:02.409000","2026-04-30T15:08:02.409000","anonymous","anonymous","false"
+"Diego Cavalcanti ","Matt and ","https://base44.app/api/apps/69f36c3068d6d60b163e7433/files/mp/public/69f36c3068d6d60b163e7433/6a591da71_image.jpg","Pago","Na garagem","69f36fd9a7d3c45963a1af83","2026-04-30T15:06:01.747000","2026-04-30T15:06:01.747000","anonymous","anonymous","false"
+"Diego Cavalcanti ","Speed bump","https://base44.app/api/apps/69f36c3068d6d60b163e7433/files/mp/public/69f36c3068d6d60b163e7433/ec2b82db8_image.jpg","Pago","Na garagem","69f36f9f7426c04c924914a1","2026-04-30T15:05:03.804000","2026-04-30T15:05:03.804000","anonymous","anonymous","false"

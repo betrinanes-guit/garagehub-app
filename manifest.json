@@ -1,0 +1,16 @@
+{
+  "name": "GarageHub",
+  "short_name": "GarageHub",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#020617",
+  "theme_color": "#facc15",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/744/744465.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

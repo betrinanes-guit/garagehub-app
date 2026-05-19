@@ -1318,54 +1318,195 @@ def detectar_sugestoes_ia(nome_arquivo):
 # =========================
 # GARAGE PUBLIC SYSTEM V1
 # =========================
-def gerar_link_publico(usuario):
-    username = usuario.get("username_publico")
+def url_base_publica_app():
+    """URL real publicada do app.
+    Configure PUBLIC_APP_URL nos Secrets se mudar o endereço do Streamlit.
+    """
+    try:
+        return str(st.secrets.get("PUBLIC_APP_URL", "https://garageapp-app-dkmo9p5ec5vyvjqfjxrti8.streamlit.app")).rstrip("/")
+    except Exception:
+        return "https://garageapp-app-dkmo9p5ec5vyvjqfjxrti8.streamlit.app"
+
+
+def gerar_slug_publico_usuario(usuario):
+    username = str(usuario.get("username_publico") or "").strip()
 
     if not username:
         username = slugify(usuario.get("nome", "garagehub-user"))
 
-    return f"https://garagehub.app/u/{username}"
+    return slugify(username)
+
+
+def gerar_link_publico(usuario):
+    slug = gerar_slug_publico_usuario(usuario)
+    return f"{url_base_publica_app()}/?perfil={slug}"
+
+
+
+def gerar_qr_code_data_uri(texto):
+    """Gera QR Code real em base64 para câmera do celular ler.
+    Usa a biblioteca qrcode quando disponível. Se não estiver instalada,
+    usa fallback online por URL pública de QR.
+    """
+    texto = str(texto or "").strip()
+    if not texto:
+        return ""
+
+    try:
+        import qrcode
+        qr = qrcode.QRCode(
+            version=None,
+            error_correction=qrcode.constants.ERROR_CORRECT_M,
+            box_size=10,
+            border=4,
+        )
+        qr.add_data(texto)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+        buffer = io.BytesIO()
+        img.save(buffer, format="PNG")
+        b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+        return f"data:image/png;base64,{b64}"
+    except Exception:
+        from urllib.parse import quote_plus
+        return f"https://quickchart.io/qr?size=320&text={quote_plus(texto)}"
+
+
+def render_qr_code_real(texto, legenda="QR Code do perfil público"):
+    """Mostra QR Code real e link copiável."""
+    qr_src = gerar_qr_code_data_uri(texto)
+    if qr_src:
+        st.image(qr_src, caption=legenda, width=260)
+    st.code(str(texto or ""), language=None)
+
+
+def buscar_usuario_publico_por_slug(slug):
+    slug = slugify(slug)
+    if not slug:
+        return None
+
+    try:
+        usuarios_publicos = listar_usuarios()
+    except Exception:
+        usuarios_publicos = []
+
+    for u in usuarios_publicos or []:
+        if str(u.get("tipo") or "usuario") == "admin":
+            continue
+
+        if gerar_slug_publico_usuario(u) == slug:
+            return u
+
+    return None
+
+
+def render_pagina_publica_por_slug(slug):
+    usuario_publico = buscar_usuario_publico_por_slug(slug)
+
+    if not usuario_publico:
+        st.error("Garagem pública não encontrada.")
+        st.info("Confira se o link foi copiado corretamente.")
+        return
+
+    minis_publicas = buscar_minis(usuario_publico.get("id"))
+
+    st.markdown("# 🌐 GarageHub Público")
+    st.caption("Garagem pública compartilhada por um colecionador GarageHub.")
+    render_public_garage(usuario_publico, minis_publicas)
+    render_perfil_publico(usuario_publico, minis_publicas)
 
 
 def render_public_garage(usuario, minis):
+    """Perfil público do colecionador usando componentes nativos do Streamlit.
+    Assim não há risco de HTML aparecer como texto na tela.
+    """
+    minis = minis or []
     link_publico = gerar_link_publico(usuario)
+    nome = str(usuario.get("nome") or "Colecionador")
+    codigo = str(usuario.get("codigo_membro") or "-")
+    nivel = str(usuario.get("nivel_cliente") or "comum").upper()
+    total_minis = len(minis)
+    valor_total = sum(float(m.get("valor_estimado") or 0) for m in minis)
+    raras = len([
+        m for m in minis
+        if str(m.get("raridade") or "").upper() in ["TH", "STH", "RLC", "CHASE", "PREMIUM", "ESPECIAL", "LIMITADO"]
+    ])
 
-    st.markdown(f"""
-    <div class="qr-card">
-        <h2>🌎 Garagem Pública</h2>
+    st.markdown("## 🌐 Perfil Público")
+    st.caption("Sua garagem compartilhável para WhatsApp, grupos e redes sociais.")
 
-        <p style="color:#cbd5e1;font-weight:800;">
-            Compartilhe sua coleção com outros colecionadores.
-        </p>
+    top_esq, top_dir = st.columns([1.15, 1])
 
-        <div class="qr-box"></div>
+    with top_esq:
+        foto_perfil = get_foto_perfil_usuario(usuario)
+        src_avatar = foto_src(foto_perfil)
+        avatar_col, texto_col = st.columns([0.28, 0.72])
+        with avatar_col:
+            if src_avatar:
+                st.image(src_avatar, width=120)
+            else:
+                st.markdown("### 👤")
+        with texto_col:
+            st.markdown(f"### {nome}")
+            st.write(f"🎫 **Código:** {codigo}")
+            st.write(f"🏁 **Nível:** {nivel}")
+            st.write(f"🚗 **Minis:** {total_minis}")
 
-        <div class="sidebar-chip">
-            🔗 {link_publico}
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    with top_dir:
+        st.markdown("### 📲 QR do Perfil Público")
+        render_qr_code_real(link_publico, "Escaneie para abrir esta garagem pública")
+        st.caption("Copie ou escaneie para enviar a garagem para amigos, grupos ou redes sociais.")
 
-    st.markdown("""
-    <div class="feature-grid">
+    m1, m2, m3 = st.columns(3)
+    with m1:
+        st.metric("🚗 Minis públicas", total_minis)
+    with m2:
+        st.metric("💎 Raras / Premium", raras)
+    with m3:
+        st.metric("💰 Valor estimado", money(valor_total))
 
-        <div class="feature-card">
-            <h3>🏆 Hall da Fama</h3>
-            <p>Mostre seus minis favoritos em destaque público.</p>
-        </div>
+    st.divider()
+    st.markdown("### 🏆 Destaques públicos da garagem")
 
-        <div class="feature-card">
-            <h3>📸 Perfil Social</h3>
-            <p>Compartilhe sua garagem premium com a comunidade.</p>
-        </div>
+    destaques = [
+        m for m in minis
+        if str(m.get("raridade") or "").upper() in ["STH", "RLC", "CHASE", "PREMIUM", "ESPECIAL", "LIMITADO"]
+    ][:6]
 
-        <div class="feature-card">
-            <h3>🚀 QR Code Ready</h3>
-            <p>Preparado para QR Code e acesso mobile.</p>
-        </div>
+    if not destaques:
+        st.info("Quando você tiver minis raros, premium ou favoritos, eles aparecerão aqui como destaques públicos.")
+        return
 
-    </div>
-    """, unsafe_allow_html=True)
+    cols = st.columns(3)
+    for idx, mini in enumerate(destaques):
+        with cols[idx % 3]:
+            foto = get_foto_item(mini)
+            src = foto_src(foto)
+            with st.container(border=True):
+                if src:
+                    st.image(src, use_container_width=True)
+                else:
+                    st.markdown("## 🏎️")
+                st.markdown(f"**{limpar_campo_visual(mini.get('nome'), 'Mini')}**")
+                st.caption(f"Marca: {limpar_campo_visual(mini.get('marca'))}")
+                st.caption(f"Série: {limpar_campo_visual(mini.get('serie'))}")
+                st.write(f"🏷️ **{limpar_campo_visual(mini.get('raridade'), 'Comum')}**")
+                st.write(f"💰 {money(mini.get('valor_estimado') or 0)}")
+
+
+def render_perfil_publico(usuario, minis):
+    """Resumo simples do perfil, sem HTML bruto."""
+    minis = minis or []
+    favoritas = [m for m in minis if (m.get("raridade") or "") in ["STH", "RLC", "Chase", "Especial", "Premium", "Limitado"]]
+    destaque = favoritas[0] if favoritas else (minis[0] if minis else {})
+
+    with st.container(border=True):
+        st.markdown("### 👤 Perfil do colecionador")
+        st.write(f"**{str(usuario.get('nome') or 'Colecionador')}**")
+        st.write("Membro VIP" if (usuario.get("nivel_cliente") or "comum") == "vip" else "Cliente comum")
+        st.write(f"Garagem: **{len(minis)}** mini(s)")
+        st.write(f"Destaque: **{limpar_campo_visual(destaque.get('nome'), 'em breve')}**")
+        st.write(f"Código: **{str(usuario.get('codigo_membro') or '-')}**")
 
 
 
@@ -2974,26 +3115,6 @@ div[data-testid="stExpander"] div[data-testid="stExpanderDetails"] {
     }
 }
 
-
-/* =========================
-   GAMIFICAÇÃO GARAGEHUB V11
-   ========================= */
-.badge-vip {
-    display:inline-block;
-    margin:4px 6px 8px 0;
-    padding:7px 12px;
-    border-radius:999px;
-    font-size:11px;
-    font-weight:950;
-    text-transform:uppercase;
-    background:linear-gradient(135deg,#facc15,#f97316);
-    color:#111827;
-    border:1px solid rgba(250,204,21,.75);
-}
-.user-card .badge-destaque {
-    box-shadow:0 0 18px rgba(250,204,21,.08);
-}
-
 </style>
 """, unsafe_allow_html=True)
 
@@ -3049,6 +3170,7 @@ def render_sidebar_saas(usuario):
             <div class="sidebar-menu-item"><span>🛒 Loja</span><span>comprar</span></div>
             <div class="sidebar-menu-item"><span>📦 Meus pedidos</span><span>status</span></div>
             <div class="sidebar-menu-item"><span>🎫 Carteirinha</span><span>QR</span></div>
+            <div class="sidebar-menu-item"><span>🌐 Perfil Público</span><span>social</span></div>
             <div class="sidebar-menu-item"><span>🏆 Hall da Fama</span><span>ranking</span></div>
             """, unsafe_allow_html=True)
 
@@ -3082,247 +3204,6 @@ def calcular_ranking(clientes, minis):
         raras = len([m for m in minis_cliente if (m.get("raridade") or "") in ["TH", "STH", "RLC", "Chase", "Especial"]])
         ranking.append({"cliente": c, "qtd": len(minis_cliente), "total_pago": total_pago, "valor_estimado": valor_estimado, "raras": raras})
     return sorted(ranking, key=lambda x: (x["total_pago"], x["qtd"], x["raras"]), reverse=True)
-
-
-# =========================
-# GAMIFICAÇÃO GARAGEHUB V11
-# =========================
-def safe_float(valor):
-    try:
-        return float(valor or 0)
-    except Exception:
-        return 0.0
-
-
-def nivel_gamificacao(pontos):
-    pontos = int(pontos or 0)
-    if pontos >= 10000:
-        return "💎 Diamante", "Diamante"
-    if pontos >= 3000:
-        return "🥇 Ouro", "Ouro"
-    if pontos >= 1000:
-        return "🥈 Prata", "Prata"
-    return "🥉 Bronze", "Bronze"
-
-
-def proximo_nivel_info(pontos):
-    pontos = int(pontos or 0)
-    metas = [(1000, "Prata"), (3000, "Ouro"), (10000, "Diamante")]
-    for meta, nome in metas:
-        if pontos < meta:
-            faltam = meta - pontos
-            progresso = int((pontos / meta) * 100) if meta else 0
-            return nome, faltam, min(progresso, 100)
-    return "Topo", 0, 100
-
-
-def calcular_gamificacao_clientes(clientes, minis, rifas=None, rifa_numeros=None):
-    # Ranking unificado: compras + coleção + raridades + rifas + vitórias.
-    rifas = rifas or []
-    rifa_numeros = rifa_numeros or []
-    resultado = []
-
-    vitorias_por_cliente = {}
-    for r in rifas:
-        if str(r.get("status") or "").lower() != "sorteada":
-            continue
-        for campo in ["vencedor_usuario_id", "top_comprador_usuario_id", "top_ganhador_usuario_id"]:
-            uid = str(r.get(campo) or "").strip()
-            if uid and uid.lower() not in ["none", "null", ""]:
-                vitorias_por_cliente[uid] = vitorias_por_cliente.get(uid, 0) + 1
-
-    cotas_por_cliente = {}
-    valor_rifas_por_cliente = {}
-    rifas_por_id = {str(r.get("id")): r for r in rifas}
-    for n in rifa_numeros:
-        uid = str(n.get("usuario_id") or "").strip()
-        if not uid:
-            continue
-        cotas_por_cliente[uid] = cotas_por_cliente.get(uid, 0) + 1
-        rifa = rifas_por_id.get(str(n.get("rifa_id") or ""), {})
-        valor_rifas_por_cliente[uid] = valor_rifas_por_cliente.get(uid, 0.0) + safe_float(rifa.get("valor_numero"))
-
-    for c in clientes or []:
-        uid = str(c.get("id") or "")
-        minis_cliente = [m for m in (minis or []) if str(m.get("usuario_id")) == uid]
-        minis_pagas = [m for m in minis_cliente if str(m.get("status_pagamento") or "").lower() == "pago"]
-        total_pago = sum(safe_float(m.get("valor_pago")) for m in minis_pagas)
-        valor_estimado = sum(safe_float(m.get("valor_estimado")) for m in minis_cliente)
-        raras = len([m for m in minis_cliente if str(m.get("raridade") or "") in ["TH", "STH", "RLC", "Chase", "Especial", "Premium"]])
-        vitorias = vitorias_por_cliente.get(uid, 0)
-        cotas = cotas_por_cliente.get(uid, 0)
-        valor_rifas = valor_rifas_por_cliente.get(uid, 0.0)
-
-        pontos = int(
-            total_pago * 5 +
-            valor_estimado * 1 +
-            len(minis_cliente) * 35 +
-            raras * 250 +
-            cotas * 20 +
-            vitorias * 1000
-        )
-        nivel_label, nivel_nome = nivel_gamificacao(pontos)
-        prox_nome, faltam, progresso = proximo_nivel_info(pontos)
-
-        conquistas = []
-        if len(minis_cliente) >= 1:
-            conquistas.append("🏁 Primeira garagem")
-        if len(minis_cliente) >= 10:
-            conquistas.append("🚗 Colecionador 10+")
-        if raras >= 1:
-            conquistas.append("💎 Caçador de raras")
-        if cotas >= 10:
-            conquistas.append("🎟️ 10 cotas em rifas")
-        if cotas >= 50:
-            conquistas.append("🔥 Rei das cotas")
-        if vitorias >= 1:
-            conquistas.append("🏆 Primeira vitória")
-        if vitorias >= 3:
-            conquistas.append("👑 Lenda das rifas")
-        if total_pago >= 1000:
-            conquistas.append("💰 Cliente Elite")
-
-        resultado.append({
-            "cliente": c,
-            "pontos": pontos,
-            "nivel_label": nivel_label,
-            "nivel_nome": nivel_nome,
-            "proximo_nivel": prox_nome,
-            "faltam": faltam,
-            "progresso": progresso,
-            "minis": len(minis_cliente),
-            "minis_pagas": len(minis_pagas),
-            "total_pago": total_pago,
-            "valor_estimado": valor_estimado,
-            "raras": raras,
-            "cotas": cotas,
-            "valor_rifas": valor_rifas,
-            "vitorias": vitorias,
-            "conquistas": conquistas,
-        })
-
-    return sorted(resultado, key=lambda x: (x["pontos"], x["vitorias"], x["cotas"], x["total_pago"]), reverse=True)
-
-
-def buscar_todos_numeros_rifas():
-    try:
-        return supabase.table("rifa_numeros").select("*").execute().data
-    except Exception:
-        return []
-
-
-def render_card_gamificacao(item, pos=None, destaque_voce=False):
-    c = item.get("cliente") or {}
-    nome = html.escape(str(c.get("nome") or "Cliente"))
-    email = html.escape(str(c.get("email") or "-"))
-    titulo_pos = f"#{pos} — " if pos else ""
-    voce = " • VOCÊ" if destaque_voce else ""
-    conquistas = item.get("conquistas") or []
-    conquistas_html = "".join([f'<span class="badge-destaque">{html.escape(x)}</span>' for x in conquistas[:6]]) or '<span class="badge-destaque">Em evolução</span>'
-
-    st.markdown(f'''
-    <div class="user-card hall-glow">
-        <div class="user-head">
-            <div>
-                <div class="user-name">{titulo_pos}{nome}{voce}</div>
-                <div class="user-email">{email}</div>
-            </div>
-            <div>
-                <span class="badge-vip">{html.escape(item.get("nivel_label") or "Bronze")}</span>
-                <span class="badge-destaque">{int(item.get("pontos") or 0)} pts</span>
-            </div>
-        </div>
-        <div class="user-info-grid">
-            <div class="user-info-item"><small>Compras pagas</small><strong>{money(item.get('total_pago') or 0)}</strong></div>
-            <div class="user-info-item"><small>Cotas em rifas</small><strong>{item.get('cotas') or 0}</strong></div>
-            <div class="user-info-item"><small>Vitórias</small><strong>{item.get('vitorias') or 0}</strong></div>
-            <div class="user-info-item"><small>Minis na garagem</small><strong>{item.get('minis') or 0}</strong></div>
-            <div class="user-info-item"><small>Raras / Premium</small><strong>{item.get('raras') or 0}</strong></div>
-            <div class="user-info-item"><small>Próximo nível</small><strong>{html.escape(str(item.get('proximo_nivel') or '-'))}</strong></div>
-        </div>
-        <div style="margin-top:14px;">{conquistas_html}</div>
-    </div>
-    ''', unsafe_allow_html=True)
-
-    progresso = int(item.get("progresso") or 0)
-    if item.get("faltam", 0) > 0:
-        st.progress(progresso, text=f"{progresso}% para {item.get('proximo_nivel')} — faltam {item.get('faltam')} pontos")
-    else:
-        st.progress(100, text="Nível máximo alcançado — Diamante")
-
-
-def render_gamificacao_admin(clientes, minis):
-    st.markdown('''
-    <div class="pro-hero">
-        <h2>🎮 Gamificação GarageHub</h2>
-        <p>Ranking premium com pontos, níveis, conquistas, cotas de rifas, vitórias e compras pagas.</p>
-    </div>
-    ''', unsafe_allow_html=True)
-
-    try:
-        rifas_rank = buscar_rifas()
-    except Exception:
-        rifas_rank = []
-    rifa_numeros_rank = buscar_todos_numeros_rifas()
-    ranking = calcular_gamificacao_clientes(clientes, minis, rifas_rank, rifa_numeros_rank)
-
-    if not ranking:
-        st.info("Ainda não há dados suficientes para a gamificação.")
-        return
-
-    total_pontos = sum(int(i.get("pontos") or 0) for i in ranking)
-    total_cotas = sum(int(i.get("cotas") or 0) for i in ranking)
-    total_vitorias = sum(int(i.get("vitorias") or 0) for i in ranking)
-
-    a, b, c = st.columns(3)
-    with a:
-        st.markdown(f'<div class="metric-card"><div class="metric-icon">⭐</div><h2>{total_pontos}</h2><p>Pontos da comunidade</p></div>', unsafe_allow_html=True)
-    with b:
-        st.markdown(f'<div class="metric-card"><div class="metric-icon">🎟️</div><h2>{total_cotas}</h2><p>Cotas em rifas</p></div>', unsafe_allow_html=True)
-    with c:
-        st.markdown(f'<div class="metric-card"><div class="metric-icon">🏆</div><h2>{total_vitorias}</h2><p>Vitórias registradas</p></div>', unsafe_allow_html=True)
-
-    st.subheader("🏁 Top 10 jogadores GarageHub")
-    for pos, item in enumerate(ranking[:10], start=1):
-        render_card_gamificacao(item, pos=pos)
-
-
-def render_gamificacao_cliente(usuario):
-    st.markdown('''
-    <div class="pro-hero">
-        <h2>🎮 Minha Gamificação</h2>
-        <p>Seu nível, pontos, conquistas, cotas de rifas e posição no ranking da comunidade.</p>
-    </div>
-    ''', unsafe_allow_html=True)
-
-    try:
-        todos_usuarios_rank = listar_usuarios()
-        todos_minis_rank = buscar_todas_minis()
-        rifas_rank = buscar_rifas()
-        rifa_numeros_rank = buscar_todos_numeros_rifas()
-    except Exception as e:
-        st.error(f"Não foi possível montar a gamificação agora: {e}")
-        return
-
-    clientes = [u for u in todos_usuarios_rank if u.get("tipo") != "admin"]
-    ranking = calcular_gamificacao_clientes(clientes, todos_minis_rank, rifas_rank, rifa_numeros_rank)
-    uid_logado = str(usuario.get("id"))
-    meu_item = None
-    minha_pos = None
-    for pos, item in enumerate(ranking, start=1):
-        if str((item.get("cliente") or {}).get("id")) == uid_logado:
-            meu_item = item
-            minha_pos = pos
-            break
-
-    if meu_item:
-        render_card_gamificacao(meu_item, pos=minha_pos, destaque_voce=True)
-    else:
-        st.info("Você ainda não entrou no ranking. Participe de compras, rifas ou tenha minis lançadas na garagem.")
-
-    st.subheader("👑 Top 5 da comunidade")
-    for pos, item in enumerate(ranking[:5], start=1):
-        render_card_gamificacao(item, pos=pos, destaque_voce=str((item.get("cliente") or {}).get("id")) == uid_logado)
 
 
 def render_admin_executivo(clientes, minis, pedidos):
@@ -3396,6 +3277,217 @@ def render_checkout_real_visual(pedidos):
         st.markdown(pix_card_html(p, f"Checkout do pedido #{p.get('id')}"), unsafe_allow_html=True)
         st.caption("Próximo passo técnico: conectar Mercado Pago/Pix API e webhook de confirmação automática.")
 
+
+
+
+# =========================
+# DETECTOR DE REPETIDOS — SCANNER IA V19.8
+# =========================
+def texto_normalizado_mini(valor):
+    """Normaliza texto para comparar minis sem depender de maiúsculas, símbolos, acentos ou formatos."""
+    texto = str(valor or "").lower().strip()
+    mapa = {
+        "á": "a", "à": "a", "â": "a", "ã": "a",
+        "é": "e", "ê": "e",
+        "í": "i",
+        "ó": "o", "ô": "o", "õ": "o",
+        "ú": "u",
+        "ç": "c",
+    }
+    for k, v in mapa.items():
+        texto = texto.replace(k, v)
+
+    # Padroniza variações muito comuns em diecast.
+    texto = texto.replace("mini gt", "minigt")
+    texto = texto.replace("mini-gt", "minigt")
+    texto = texto.replace("kaido house", "kaidohouse")
+    texto = texto.replace("hot wheels", "hotwheels")
+    texto = texto.replace("b burago", "bburago")
+    texto = texto.replace("burago", "bburago")
+    texto = texto.replace("bbrago", "bburago")
+    texto = texto.replace("gt r", "gtr")
+    texto = texto.replace("gt-r", "gtr")
+    texto = texto.replace("sf 90", "sf90")
+    texto = texto.replace("r 34", "r34")
+    texto = texto.replace("r 33", "r33")
+    texto = texto.replace("r 32", "r32")
+    texto = texto.replace("lb wk", "lbwk")
+    texto = texto.replace("lb-wk", "lbwk")
+
+    texto = re.sub(r"[^a-z0-9 ]+", " ", texto)
+    texto = re.sub(r"\b(sf)\s+(90)\b", r"\1\2", texto)
+    texto = re.sub(r"\b(r)\s+(3[2345])\b", r"\1\2", texto)
+    texto = re.sub(r"\s+", " ", texto).strip()
+    return texto
+
+
+PALAVRAS_FRACAS_REPETIDO = {
+    "hotwheels", "hot", "wheels", "mini", "minigt", "kaido", "kaidohouse", "house",
+    "matchbox", "tomica", "m2", "machines", "greenlight", "tarmac", "works", "inno64",
+    "johnny", "lightning", "comum", "premium", "especial", "limitado", "chase", "rlc",
+    "serie", "series", "collection", "colecao", "scanner", "identificada", "pelo", "miniatura",
+    "diecast", "escala", "confirmar", "nao", "identificado", "car", "cars", "the", "and"
+}
+
+
+def tokens_fortes_mini(*valores):
+    texto = texto_normalizado_mini(" ".join(str(v or "") for v in valores))
+    tokens = []
+    for t in texto.split():
+        if len(t) < 2:
+            continue
+        if t in PALAVRAS_FRACAS_REPETIDO:
+            continue
+        # Mantém códigos/modelos como sf90, r34, f40, 911, 190e etc.
+        tokens.append(t)
+    return set(tokens)
+
+
+def texto_completo_mini(mini):
+    return texto_normalizado_mini(" ".join([
+        str(mini.get("nome") or ""),
+        str(mini.get("marca") or ""),
+        str(mini.get("serie") or ""),
+        str(mini.get("ano") or ""),
+        str(mini.get("raridade") or ""),
+    ]))
+
+
+def similaridade_texto(a, b):
+    try:
+        from difflib import SequenceMatcher
+        return SequenceMatcher(None, a, b).ratio()
+    except Exception:
+        return 0.0
+
+
+def minis_parecidas(minis, nome="", marca="", serie="", ano=""):
+    """Retorna possíveis repetidos com comparação mais inteligente por modelo/casting.
+
+    A versão anterior era conservadora demais. Esta compara:
+    - nome exato / parcial
+    - tokens fortes do modelo, como Ferrari + SF90, R34, F40, Silvia
+    - similaridade textual aproximada
+    - marca/série/ano como bônus, não como trava
+    """
+    alvo_nome = texto_normalizado_mini(nome)
+    alvo_marca = texto_normalizado_mini(marca)
+    alvo_serie = texto_normalizado_mini(serie)
+    alvo_ano = texto_normalizado_mini(ano)
+    alvo_total = texto_normalizado_mini(" ".join([alvo_nome, alvo_marca, alvo_serie, alvo_ano]))
+    alvo_tokens = tokens_fortes_mini(nome, marca, serie, ano)
+
+    if not alvo_total and not alvo_tokens:
+        return []
+
+    achados = []
+
+    for mini in minis or []:
+        nome_mini = texto_normalizado_mini(mini.get("nome"))
+        marca_mini = texto_normalizado_mini(mini.get("marca"))
+        serie_mini = texto_normalizado_mini(mini.get("serie"))
+        ano_mini = texto_normalizado_mini(mini.get("ano"))
+        total_mini = texto_completo_mini(mini)
+        tokens_mini = tokens_fortes_mini(
+            mini.get("nome"), mini.get("marca"), mini.get("serie"), mini.get("ano")
+        )
+
+        score = 0
+        motivos = []
+
+        if alvo_nome and nome_mini:
+            if alvo_nome == nome_mini:
+                score += 100
+                motivos.append("nome igual")
+            elif alvo_nome in nome_mini or nome_mini in alvo_nome:
+                score += 75
+                motivos.append("nome parecido")
+            else:
+                ratio = similaridade_texto(alvo_nome, nome_mini)
+                if ratio >= 0.82:
+                    score += 70
+                    motivos.append("nome muito similar")
+                elif ratio >= 0.68:
+                    score += 50
+                    motivos.append("nome similar")
+
+        comuns = alvo_tokens & tokens_mini
+        if comuns:
+            # Tokens fortes são o principal: Ferrari + SF90, Nissan + R34 etc.
+            if len(comuns) >= 3:
+                score += 80
+            elif len(comuns) == 2:
+                score += 62
+            elif len(comuns) == 1:
+                token = list(comuns)[0]
+                # Código/modelo específico sozinho já vale bastante.
+                if any(ch.isdigit() for ch in token) or len(token) >= 5:
+                    score += 46
+                else:
+                    score += 24
+            motivos.append("tokens: " + ", ".join(sorted(comuns)))
+
+        if alvo_marca and marca_mini:
+            if alvo_marca == marca_mini:
+                score += 14
+            elif alvo_marca in marca_mini or marca_mini in alvo_marca:
+                score += 8
+
+        if alvo_serie and serie_mini:
+            if alvo_serie == serie_mini or alvo_serie in serie_mini or serie_mini in alvo_serie:
+                score += 10
+
+        if alvo_ano and ano_mini and alvo_ano == ano_mini:
+            score += 6
+
+        # Comparação global ajuda quando a IA coloca fabricante errado, mas acerta modelo/cor.
+        ratio_total = similaridade_texto(alvo_total, total_mini)
+        if ratio_total >= 0.75:
+            score += 24
+        elif ratio_total >= 0.62:
+            score += 12
+
+        # Casos clássicos: alvo tem Ferrari + SF90 e garagem tem Ferrari SF90, mesmo com marca fabricante diferente.
+        if {"ferrari", "sf90"}.issubset(alvo_tokens | tokens_mini) and {"ferrari", "sf90"}.issubset(alvo_tokens) and {"ferrari", "sf90"}.issubset(tokens_mini):
+            score += 45
+            motivos.append("assinatura ferrari sf90")
+
+        if score >= 42:
+            mini_copia = dict(mini)
+            mini_copia["_score_repetido"] = score
+            mini_copia["_motivo_repetido"] = "; ".join(motivos) if motivos else "similaridade"
+            achados.append((score, mini_copia))
+
+    achados.sort(key=lambda x: x[0], reverse=True)
+    return [m for _, m in achados[:10]]
+
+
+def render_alerta_repetidos(minis, nome, marca="", serie="", ano=""):
+    """Mostra alerta visual se a mini provavelmente já existir na garagem."""
+    repetidos = minis_parecidas(minis, nome, marca, serie, ano)
+
+    if not repetidos:
+        st.success("✅ Nenhum repetido provável encontrado nesta garagem.")
+        st.caption("Dica: se você sabe que já existe, confira se o nome salvo na garagem está muito diferente do nome sugerido pela IA.")
+        return []
+
+    st.warning(f"⚠️ Possível mini repetido: encontrei {len(repetidos)} item(ns) parecido(s) nesta garagem.")
+
+    linhas = []
+    for mini in repetidos:
+        linhas.append({
+            "Score": int(mini.get("_score_repetido") or 0),
+            "Nome": limpar_campo_visual(mini.get("nome"), "-"),
+            "Marca": limpar_campo_visual(mini.get("marca"), "-"),
+            "Série": limpar_campo_visual(mini.get("serie"), "-"),
+            "Ano": limpar_campo_visual(mini.get("ano"), "-"),
+            "Raridade": limpar_campo_visual(mini.get("raridade"), "-"),
+            "Valor estimado": money(mini.get("valor_estimado") or 0),
+            "Motivo": limpar_campo_visual(mini.get("_motivo_repetido"), "similaridade"),
+        })
+
+    st.dataframe(linhas, use_container_width=True, hide_index=True)
+    return repetidos
 
 
 # =========================
@@ -3721,6 +3813,16 @@ def render_scanner_ia_demo():
 
     st.markdown('<div class="checkout-box"><h3>✅ Validação antes de salvar</h3><p>Confira os dados sugeridos pela IA antes de lançar no GarageHub.</p></div>', unsafe_allow_html=True)
 
+    # Detector automático de repetidos logo após a análise da IA.
+    try:
+        if is_admin:
+            st.info("🔁 Detector de repetidos: selecione o cliente abaixo para comparar com a garagem dele antes de lançar.")
+        else:
+            minis_do_usuario = buscar_minis(usuario_atual.get("id"))
+            render_alerta_repetidos(minis_do_usuario, nome_sugerido, marca_sugerida, serie_sugerida, ano_sugerido)
+    except Exception as e:
+        st.caption(f"Detector de repetidos indisponível neste momento: {e}")
+
     with st.expander("✏️ Ajustar dados antes de salvar", expanded=True):
         c1, c2 = st.columns(2)
 
@@ -3773,6 +3875,14 @@ def render_scanner_ia_demo():
             if clientes_scanner:
                 mapa_clientes = {f"{c.get('nome','')} — {c.get('email','')}": c for c in clientes_scanner}
                 cliente_label = st.selectbox("Cliente para lançar na garagem", list(mapa_clientes.keys()), key="scanner_real_cliente_garagem")
+
+                # Validação de repetido na garagem do cliente selecionado pelo admin.
+                try:
+                    cliente_preview = mapa_clientes[cliente_label]
+                    minis_cliente_preview = buscar_minis(cliente_preview.get("id"))
+                    render_alerta_repetidos(minis_cliente_preview, s_nome, s_marca, s_serie, s_ano)
+                except Exception as e:
+                    st.caption(f"Não foi possível comparar repetidos para este cliente agora: {e}")
 
                 if st.button("🏎️ Lançar na garagem do cliente", key="scanner_real_lancar_garagem", use_container_width=True):
                     foto_url = upload_storage(foto_principal, "scanner", s_nome) if foto_principal is not None else ""
@@ -3937,72 +4047,6 @@ def excluir_rifa(rifa_id):
 
 def buscar_numeros_rifa(rifa_id):
     return supabase.table("rifa_numeros").select("*").eq("rifa_id", str(rifa_id)).order("numero").execute().data
-
-
-def atualizar_numero_rifa(numero_id, dados):
-    """Atualiza um número específico da rifa."""
-    supabase.table("rifa_numeros").update(dados).eq("id", numero_id).execute()
-
-
-def atualizar_numeros_rifa_lote(rifa_id, usuario_id, status_origem, novo_status):
-    """Atualiza em lote os números de um cliente em uma rifa por status."""
-    query = (
-        supabase.table("rifa_numeros")
-        .update({"status_pagamento": novo_status})
-        .eq("rifa_id", str(rifa_id))
-        .eq("usuario_id", str(usuario_id))
-    )
-
-    if status_origem and status_origem != "todos":
-        query = query.eq("status_pagamento", status_origem)
-
-    query.execute()
-
-
-def excluir_numeros_rifa_lote(rifa_id, usuario_id, status_origem):
-    """Remove em lote números de um cliente em uma rifa por status."""
-    query = (
-        supabase.table("rifa_numeros")
-        .delete()
-        .eq("rifa_id", str(rifa_id))
-        .eq("usuario_id", str(usuario_id))
-    )
-
-    if status_origem and status_origem != "todos":
-        query = query.eq("status_pagamento", status_origem)
-
-    query.execute()
-
-
-def agrupar_numeros_rifa_por_cliente_status(numeros):
-    """Agrupa números por cliente e status para facilitar confirmação/cancelamento em lote."""
-    grupos = {}
-
-    for item in numeros or []:
-        uid = str(item.get("usuario_id") or "")
-        status = str(item.get("status_pagamento") or "pendente").lower()
-        chave = (uid, status)
-
-        if chave not in grupos:
-            grupos[chave] = {
-                "usuario_id": uid,
-                "status": status,
-                "numeros": [],
-                "ids": [],
-            }
-
-        try:
-            grupos[chave]["numeros"].append(int(item.get("numero")))
-        except Exception:
-            pass
-
-        if item.get("id"):
-            grupos[chave]["ids"].append(item.get("id"))
-
-    return sorted(
-        grupos.values(),
-        key=lambda g: (str(g.get("status")), str(g.get("usuario_id")))
-    )
 
 
 def buscar_numeros_rifa_fresco(rifa_id):
@@ -4537,84 +4581,6 @@ def render_rifas_admin(clientes):
                 if len(numeros) > 80:
                     st.caption(f"Mostrando 80 de {len(numeros)} números.")
 
-                st.markdown("#### ✅ Confirmação de pagamento em lote")
-                st.caption("Use esta área para confirmar como pago ou cancelar reservas/pendências de um cliente sem alterar número por número.")
-
-                grupos_pagamento = agrupar_numeros_rifa_por_cliente_status(numeros)
-
-                if not grupos_pagamento:
-                    st.info("Ainda não há números para gerenciar em lote.")
-                else:
-                    for idx_grupo, grupo in enumerate(grupos_pagamento):
-                        uid_grupo = grupo.get("usuario_id")
-                        status_grupo = grupo.get("status") or "pendente"
-                        numeros_grupo = sorted(grupo.get("numeros") or [])
-                        qtd_grupo = len(numeros_grupo)
-                        valor_grupo = qtd_grupo * float(rifa.get("valor_numero") or 0)
-                        nome_grupo = nome_cliente_por_id(clientes_por_id, uid_grupo)
-                        nums_txt = ", ".join(str(n).zfill(max(2, len(str(qtd_total)))) for n in numeros_grupo[:60])
-                        if qtd_grupo > 60:
-                            nums_txt += f" ... +{qtd_grupo - 60}"
-
-                        st.markdown(f"""
-                        <div class="pro-card hall-glow">
-                            <h3>👤 {html.escape(str(nome_grupo))}</h3>
-                            <p>
-                                <strong>{qtd_grupo}</strong> número(s) • Status atual: <strong>{html.escape(str(status_grupo))}</strong><br>
-                                Valor previsto: <strong>{money(valor_grupo)}</strong><br>
-                                Números: {html.escape(nums_txt)}
-                            </p>
-                        </div>
-                        """, unsafe_allow_html=True)
-
-                        col_pg_1, col_pg_2, col_pg_3 = st.columns([1, 1, 1.2])
-
-                        with col_pg_1:
-                            if st.button(
-                                "✅ Marcar este lote como pago",
-                                key=f"rifa_lote_pago_{rifa_id}_{uid_grupo}_{status_grupo}_{idx_grupo}",
-                                use_container_width=True
-                            ):
-                                try:
-                                    atualizar_numeros_rifa_lote(rifa_id, uid_grupo, status_grupo, "pago")
-                                    st.success("Lote marcado como pago.")
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Erro ao confirmar pagamento do lote: {e}")
-
-                        with col_pg_2:
-                            if st.button(
-                                "🔵 Voltar para reservado",
-                                key=f"rifa_lote_reservado_{rifa_id}_{uid_grupo}_{status_grupo}_{idx_grupo}",
-                                use_container_width=True
-                            ):
-                                try:
-                                    atualizar_numeros_rifa_lote(rifa_id, uid_grupo, status_grupo, "reservado")
-                                    st.success("Lote marcado como reservado.")
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Erro ao reservar lote: {e}")
-
-                        with col_pg_3:
-                            confirmar_cancelamento_lote = st.checkbox(
-                                "Confirmar cancelamento/remover números",
-                                key=f"rifa_lote_confirmar_cancelar_{rifa_id}_{uid_grupo}_{status_grupo}_{idx_grupo}"
-                            )
-                            if st.button(
-                                "🗑️ Cancelar lote e liberar números",
-                                key=f"rifa_lote_cancelar_{rifa_id}_{uid_grupo}_{status_grupo}_{idx_grupo}",
-                                use_container_width=True
-                            ):
-                                if not confirmar_cancelamento_lote:
-                                    st.warning("Marque a confirmação antes de cancelar o lote.")
-                                else:
-                                    try:
-                                        excluir_numeros_rifa_lote(rifa_id, uid_grupo, status_grupo)
-                                        st.success("Lote cancelado e números liberados.")
-                                        st.rerun()
-                                    except Exception as e:
-                                        st.error(f"Erro ao cancelar lote: {e}")
-
             st.divider()
             st.markdown("### 🎲 Área oficial do sorteio")
             st.caption("O sorteio usa somente números com status pago ou reservado. No modo Top comprador/Top ganhador, o botão apura o ranking e grava o resultado oficial.")
@@ -4776,56 +4742,6 @@ def render_rifas_cliente(usuario):
         st.progress(min(progresso, 100), text=f"{progresso}% dos números ocupados")
         st.caption(resumo_sync)
 
-        # =========================
-        # RESUMO DAS COTAS DO CLIENTE
-        # =========================
-        qtd_minhas_cotas = len(meus_numeros)
-        minhas_pagas = len([
-            n for n in meus_numeros
-            if str(n.get("status_pagamento") or "").lower() == "pago"
-        ])
-        minhas_reservadas = len([
-            n for n in meus_numeros
-            if str(n.get("status_pagamento") or "").lower() == "reservado"
-        ])
-        minhas_pendentes = len([
-            n for n in meus_numeros
-            if str(n.get("status_pagamento") or "").lower() in ["pendente", "aguardando_pix"]
-        ])
-        total_investido_cliente = qtd_minhas_cotas * float(rifa.get("valor_numero") or 0)
-        total_pago_cliente = minhas_pagas * float(rifa.get("valor_numero") or 0)
-
-        st.markdown(f"""
-        <div class="pro-grid">
-            <div class="pro-card hall-glow">
-                <h3>🎟️ Suas cotas</h3>
-                <p><strong>{qtd_minhas_cotas}</strong><br>Total de números vinculados a você nesta rifa.</p>
-            </div>
-            <div class="pro-card hall-glow">
-                <h3>💰 Total investido</h3>
-                <p><strong>{money(total_investido_cliente)}</strong><br>Valor total das suas cotas nesta rifa.</p>
-            </div>
-            <div class="pro-card hall-glow">
-                <h3>✅ Pago confirmado</h3>
-                <p><strong>{money(total_pago_cliente)}</strong><br>{minhas_pagas} cota(s) paga(s).</p>
-            </div>
-        </div>
-        <div class="pro-grid">
-            <div class="pro-card">
-                <h3>🟢 Pagas</h3>
-                <p><strong>{minhas_pagas}</strong><br>Cotas confirmadas pelo admin.</p>
-            </div>
-            <div class="pro-card">
-                <h3>🔵 Reservadas</h3>
-                <p><strong>{minhas_reservadas}</strong><br>Cotas separadas para você.</p>
-            </div>
-            <div class="pro-card">
-                <h3>🟡 Pendentes</h3>
-                <p><strong>{minhas_pendentes}</strong><br>Aguardando confirmação.</p>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
         if meus_numeros:
             lista_meus = ", ".join(str(n.get("numero")).zfill(max(2, len(str(qtd_total)))) for n in meus_numeros)
             st.success(f"Seus números nesta rifa: {lista_meus}")
@@ -4865,6 +4781,19 @@ if "usuario" not in st.session_state:
     st.session_state.usuario = None
 if "editar_mini_id" not in st.session_state:
     st.session_state.editar_mini_id = None
+
+
+# =========================
+# ROTA PÚBLICA DO PERFIL
+# =========================
+try:
+    perfil_slug_qs = st.query_params.get("perfil", "")
+except Exception:
+    perfil_slug_qs = ""
+
+if perfil_slug_qs:
+    render_pagina_publica_por_slug(perfil_slug_qs)
+    st.stop()
 
 
 # =========================
@@ -5086,14 +5015,13 @@ else:
         with m4:
             st.markdown(f'<div class="metric-card"><div class="metric-icon">💰</div><h2>{money(total_pago_fin)}</h2><p>Pago</p></div>', unsafe_allow_html=True)
 
-        aba_clientes, aba_loja, aba_pedidos, aba_minis, aba_financeiro, aba_hall_admin, aba_ranking_admin, aba_timeline_admin, aba_sorteios_admin, aba_lab_admin, aba_exec_admin, aba_checkout_admin, aba_notif_admin = st.tabs([
+        aba_clientes, aba_loja, aba_pedidos, aba_minis, aba_financeiro, aba_hall_admin, aba_timeline_admin, aba_sorteios_admin, aba_lab_admin, aba_exec_admin, aba_checkout_admin, aba_notif_admin = st.tabs([
             "👥 Clientes",
             "🛒 Loja",
             "💰 Pedidos",
             "🏎️ Minis",
             "📊 Financeiro",
             "🏆 Hall",
-            "👑 Ranking",
             "🕒 Timeline",
             "🎟️ Sorteios",
             "🧪 Lab IA/Pix",
@@ -5793,23 +5721,6 @@ else:
                     )
                 st.markdown('<div class="garage-grid">' + ''.join(cards) + '</div>', unsafe_allow_html=True)
 
-            st.divider()
-            render_gamificacao_admin(clientes, todas_minis)
-
-        # =========================
-        # ABA RANKING ADMIN
-        # =========================
-        with aba_ranking_admin:
-            st.markdown("""
-            <div class="admin-work-card">
-                <h3>👑 Ranking e Gamificação GarageHub</h3>
-                <p>Pontuação geral dos clientes com compras, coleção, raridades, cotas de rifas, vitórias, níveis e conquistas.</p>
-            </div>
-            """, unsafe_allow_html=True)
-
-            render_gamificacao_admin(clientes, todas_minis)
-
-
         # =========================
         # ABA TIMELINE ADMIN
         # =========================
@@ -5876,7 +5787,6 @@ else:
                 pedidos_exec = []
             render_admin_executivo(clientes, todas_minis, pedidos_exec)
             render_hall_automatico(clientes, todas_minis)
-            render_gamificacao_admin(clientes, todas_minis)
 
         # =========================
         # ABA CHECKOUT ADMIN
@@ -5933,7 +5843,7 @@ else:
         </div>
         """, unsafe_allow_html=True)
 
-        aba_garagem, aba_loja_cliente, aba_rifas_cliente, aba_meus_pedidos, aba_hall_cliente, aba_ranking_cliente, aba_carteirinha_qr, aba_lab_cliente, aba_pagamentos_cliente, aba_perfil_cliente, aba_mobile_cliente, aba_notif_cliente, aba_scanner_cliente = st.tabs([
+        aba_garagem, aba_loja_cliente, aba_rifas_cliente, aba_meus_pedidos, aba_hall_cliente, aba_ranking_cliente, aba_carteirinha_qr, aba_perfil_publico_cliente, aba_pagamentos_cliente, aba_perfil_cliente, aba_mobile_cliente, aba_notif_cliente, aba_scanner_cliente = st.tabs([
             "🏎️ Minha garagem",
             "🛒 Loja",
             "🎟️ Rifas",
@@ -5941,7 +5851,7 @@ else:
             "🏆 Hall da Fama",
             "👑 Ranking",
             "🎫 Carteirinha QR",
-            "🧪 Lab IA/Pix",
+            "🌐 Perfil Público",
             "💳 Pagamentos",
             "👤 Perfil",
             "📱 Mobile",
@@ -6221,36 +6131,41 @@ else:
             except Exception:
                 st.error("Não foi possível montar o ranking agora.")
 
-            st.divider()
-            render_gamificacao_cliente(usuario)
-
         with aba_carteirinha_qr:
             nivel = usuario.get("nivel_cliente") or "comum"
-            st.markdown(f"""
-            <div class="qr-card">
-                <h2>🎫 Carteirinha Digital GarageHub</h2>
-                <p><strong>{html.escape(str(usuario.get('nome') or 'Cliente'))}</strong></p>
-                <div class="qr-box"></div>
-                <p>Código: <strong>{html.escape(str(usuario.get('codigo_membro') or '-'))}</strong></p>
-                <p>Nível: <strong>{'MEMBRO VIP' if nivel == 'vip' else 'CLIENTE COMUM'}</strong></p>
-                <p>Use este QR visual como base da carteirinha. A próxima etapa pode gerar QR real com link público do perfil.</p>
+            link_publico_qr = gerar_link_publico(usuario)
+
+            st.markdown("## 🎫 Carteirinha Digital GarageHub")
+            st.caption("QR Code real apontando para o seu Perfil Público.")
+
+            c_qr1, c_qr2 = st.columns([1, 1.4])
+
+            with c_qr1:
+                render_qr_code_real(link_publico_qr, "Escaneie para abrir o Perfil Público")
+
+            with c_qr2:
+                st.markdown(f"### {str(usuario.get('nome') or 'Cliente')}")
+                st.write(f"🎫 **Código:** {str(usuario.get('codigo_membro') or '-')}")
+                st.write(f"🏁 **Nível:** {'MEMBRO VIP' if nivel == 'vip' else 'CLIENTE COMUM'}")
+                st.write("🌐 **Destino do QR:** Perfil Público da garagem")
+                st.info("Leia este QR com a câmera do celular. Ele deve abrir exatamente o seu Perfil Público no GarageHub.")
+
+        with aba_perfil_publico_cliente:
+            st.markdown("""
+            <div class="store-callout">
+                <h3>🌐 Perfil Público</h3>
+                <p>Sua garagem compartilhável para enviar no WhatsApp, grupos e redes sociais.</p>
             </div>
             """, unsafe_allow_html=True)
 
-        with aba_lab_cliente:
-            st.markdown("""
-            <div class="store-callout">
-                <h3>🧪 Lab IA/Pix</h3>
-                <p>Área preparada para scanner IA, pagamento Pix, notificações e recursos mobile.</p>
-            </div>
-            """, unsafe_allow_html=True)
-            st.markdown("""
-            <div class="feature-grid">
-                <div class="lab-card"><h3>📱 Scanner IA</h3><p>Futuro: apontar a câmera para identificar mini, raridade e dados.</p></div>
-                <div class="lab-card"><h3>💳 Pix assistido</h3><p>Agora: cliente gera Pix no pedido e admin confirma para lançar a mini na garagem.</p></div>
-                <div class="lab-card"><h3>🔔 Notificações</h3><p>Futuro: avisos de pedido aprovado, pagamento e entrega na garagem.</p></div>
-            </div>
-            """, unsafe_allow_html=True)
+            minis_publico = buscar_minis(usuario["id"])
+            render_public_garage(usuario, minis_publico)
+            render_perfil_publico(usuario, minis_publico)
+
+            link_publico = gerar_link_publico(usuario)
+            st.markdown("### 🔗 Link público da sua garagem")
+            st.code(link_publico, language=None)
+            st.caption("Este é o mesmo endereço usado no QR Code da sua carteirinha.")
 
 
 
@@ -6295,7 +6210,6 @@ else:
         # =========================
         with aba_scanner_cliente:
             render_scanner_ia_demo()
-            st.info("Scanner em modo assistido/local. Para identificação automática real, a próxima etapa técnica é conectar IA de visão + catálogo de referência.")
 
         with aba_garagem:
             minis = buscar_minis(usuario["id"])

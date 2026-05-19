@@ -2,3 +2,6 @@ streamlit
 supabase
 pandas
 pillow
+
+google-genai
+Pillow

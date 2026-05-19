@@ -1,4 +1,6 @@
 import base64
+import json
+import io
 import html
 import mimetypes
 import re
@@ -8,8 +10,10 @@ from pathlib import Path
 from datetime import datetime
 
 import streamlit as st
-import streamlit.components.v1 as components
 from supabase import create_client
+from PIL import Image
+from google import genai
+from google.genai import types
 
 st.set_page_config(
     page_title="GarageHub - Garagem Hot Wheels",
@@ -3393,446 +3397,446 @@ def render_checkout_real_visual(pedidos):
         st.caption("Próximo passo técnico: conectar Mercado Pago/Pix API e webhook de confirmação automática.")
 
 
-def obter_secret_valor(*nomes, padrao=""):
-    """Lê secrets do Streamlit com fallback seguro."""
-    for nome in nomes:
-        try:
-            valor = st.secrets.get(nome, "")
-            if valor:
-                return str(valor).strip()
-        except Exception:
-            pass
-    return padrao
 
-
-def imagem_upload_para_base64(uploaded_file):
-    if uploaded_file is None:
-        return "", "image/jpeg"
-    try:
-        dados = uploaded_file.getvalue()
-        mime = mimetypes.guess_type(uploaded_file.name)[0] or "image/jpeg"
-        return base64.b64encode(dados).decode("utf-8"), mime
-    except Exception:
-        return "", "image/jpeg"
-
-
-def limpar_json_ia(texto):
-    """Extrai JSON mesmo quando a IA responde com bloco markdown."""
-    import json
-    texto = str(texto or "").strip().replace("```json", "```")
-    if "```" in texto:
-        partes = texto.split("```")
-        if len(partes) >= 2:
-            texto = partes[1].strip()
-    ini = texto.find("{")
-    fim = texto.rfind("}")
-    if ini >= 0 and fim > ini:
-        texto = texto[ini:fim + 1]
-    try:
-        return json.loads(texto)
-    except Exception:
-        return {}
-
-
-def normalizar_resultado_scanner(dados):
-    dados = dados or {}
-
-    def campo(nome, padrao="A confirmar"):
-        valor = dados.get(nome)
-        if valor is None:
-            return padrao
-        valor = str(valor).strip()
-        if not valor or valor.lower() in ["none", "null", "nan", "unknown", "desconhecido"]:
-            return padrao
-        return valor
+# =========================
+# SCANNER IA REAL — TRINANES AI GARAGE VISION
+# =========================
+def preparar_imagem_para_gemini(arquivo):
+    # Converte câmera/upload para JPEG otimizado e envia como Part para o Gemini Vision.
+    if arquivo is None:
+        return None
 
     try:
-        confianca = int(float(dados.get("confianca") or 0))
-    except Exception:
-        confianca = 0
+        imagem = Image.open(arquivo)
 
-    try:
-        valor = float(dados.get("valor_estimado") or dados.get("valor") or 0)
-    except Exception:
-        valor = 0.0
+        if imagem.mode != "RGB":
+            imagem = imagem.convert("RGB")
 
-    return {
-        "nome": campo("nome"),
-        "marca": campo("marca"),
-        "serie": campo("serie", ""),
-        "linha": campo("linha", ""),
-        "ano": campo("ano", ""),
-        "sku": campo("sku", ""),
-        "raridade": campo("raridade", "Não identificado"),
-        "cor": campo("cor", ""),
-        "escala": campo("escala", "1:64"),
-        "texto_lido": campo("texto_lido", ""),
-        "busca_sugerida": campo("busca_sugerida", ""),
-        "valor": valor,
-        "valor_estimado": valor,
-        "confianca": max(0, min(confianca, 99)),
-        "fonte": campo("fonte", "IA + busca web"),
-        "observacao": campo("observacao", "Resultado sugerido. Valide antes de salvar."),
-    }
+        imagem.thumbnail((1024, 1024))
+
+        buffer = io.BytesIO()
+        imagem.save(buffer, format="JPEG", quality=85, optimize=True)
+        buffer.seek(0)
+
+        return types.Part.from_bytes(
+            data=buffer.getvalue(),
+            mime_type="image/jpeg"
+        )
+
+    except Exception as e:
+        st.error(f"Erro ao preparar imagem: {e}")
+        return None
 
 
-def chamar_gemini_vision_scanner(uploaded_file, tipo_analise="Mini solto", observacao=""):
-    """Usa Gemini Vision via REST quando GEMINI_API_KEY/GOOGLE_API_KEY estiver configurada."""
-    api_key = obter_secret_valor("GEMINI_API_KEY", "GOOGLE_API_KEY")
-    if not api_key or uploaded_file is None:
-        return None, "Configure GEMINI_API_KEY nos secrets para ativar leitura por imagem."
+def limpar_json_scanner(texto):
+    # Limpa resposta do Gemini e converte JSON.
+    texto = str(texto or "").strip()
+    texto = texto.replace("```json", "").replace("```", "").strip()
 
-    img_b64, mime = imagem_upload_para_base64(uploaded_file)
-    if not img_b64:
-        return None, "Não consegui ler a imagem enviada."
+    match = re.search(r"\{.*\}", texto, re.DOTALL)
+    if match:
+        texto = match.group(0)
 
-    prompt = f"""
-Você é um especialista em miniaturas diecast 1:64, Hot Wheels, Matchbox, Mini GT, Kaido House, Tomica, GreenLight, M2 Machines, Inno64 e Tarmac Works.
-Analise a imagem enviada. Pode ser blister, mini solto, expositor ou coleção.
+    return json.loads(texto)
 
-Objetivo: identificar a miniatura da forma mais precisa possível. Leia qualquer texto visível no blister, base, card, embalagem ou fundo. Para mini solto, use características visuais: carroceria, pintura, rodas, decalques, cor, escala e marca provável.
 
-Tipo de análise informado pelo usuário: {tipo_analise}
-Observação do usuário: {observacao}
+def montar_prompt_scanner_garagehub(modo):
+    return f'''
+Você é especialista profissional em miniaturas diecast 1:64:
+Hot Wheels, Mini GT, Kaido House, Matchbox, M2 Machines, GreenLight, Tarmac Works, Inno64, Johnny Lightning e similares.
 
-Responda SOMENTE em JSON válido, sem markdown, no formato:
+Tipo de análise solicitado pelo usuário:
+{modo}
+
+As imagens podem conter:
+- apenas o mini solto
+- blister completo
+- frente do blister
+- verso do blister
+- expositor
+- vários minis juntos
+- coleção inteira
+
+Sua missão:
+Identificar o máximo possível SEM inventar dados.
+
+Retorne APENAS JSON válido, sem texto antes e sem texto depois.
+
 {{
-  "nome": "nome provável do modelo/casting",
-  "marca": "Hot Wheels/Mini GT/Matchbox/etc ou A confirmar",
-  "serie": "série/linha se identificar",
-  "linha": "sub-linha ou coleção se identificar",
-  "ano": "ano de lançamento se identificar",
-  "sku": "SKU/código se aparecer ou A confirmar",
-  "raridade": "Comum/TH/STH/RLC/Premium/Chase/Especial/Não identificado",
-  "cor": "cor principal e detalhes",
-  "escala": "escala provável",
-  "texto_lido": "texto OCR lido na imagem",
-  "busca_sugerida": "termos exatos para pesquisar na web",
-  "valor_estimado": 0,
-  "confianca": 0,
-  "observacao": "por que chegou nessa identificação e o que precisa validar"
+  "tipo_imagem_detectada": "",
+  "modelo_detectado": "",
+  "fabricante_detectado": "",
+  "marca_linha": "",
+  "possivel_serie": "",
+  "series_index": "",
+  "sku": "",
+  "ano_lancamento": "",
+  "possivel_raridade": "",
+  "escala": "",
+  "casting": "",
+  "cor_principal": "",
+  "cor_base": "",
+  "cor_vidro": "",
+  "cor_interior": "",
+  "tipo_roda": "",
+  "pais_origem": "",
+  "designer": "",
+  "valor_estimado_brasil": "",
+  "nivel_confianca": "",
+  "detalhes_visuais": "",
+  "alerta_colecao": "",
+  "observacoes": "",
+  "itens_detectados": []
 }}
 
-Regras:
-- Se não tiver certeza, use A confirmar e reduza a confiança.
-- Não invente SKU/ano/raridade sem evidência visual ou texto.
-- Para blister, priorize texto lido no card.
-- Para mini solto, descreva como provável e gere uma busca_sugerida boa.
-""".strip()
+Regras obrigatórias:
+- Nunca invente SKU, ano, designer ou série.
+- Se não tiver certeza, use "Não identificado".
+- Para raridade, use apenas:
+  "Comum", "TH", "STH", "Premium", "RLC", "Chase", "Especial", "Limitado", "Não identificado".
+- O valor estimado deve ser em reais, aproximado, e com faixa. Exemplo: "R$ 80 a R$ 150".
+- Se for mini solto, priorize modelo, fabricante provável, cor, rodas, decals e confiança.
+- Se for blister, tente ler SKU, série, ano e informações impressas.
+- Se for expositor/coleção, preencha itens_detectados com uma lista simples dos minis encontrados.
+- nivel_confianca deve ser percentual, exemplo: "72%".
+- alerta_colecao deve dizer se parece item comum, raro, premium, chase ou item que merece pesquisa manual.
+'''
 
-    payload = {
-        "contents": [{
-            "parts": [
-                {"text": prompt},
-                {"inline_data": {"mime_type": mime, "data": img_b64}}
-            ]
-        }],
-        "generationConfig": {"temperature": 0.15, "maxOutputTokens": 1200}
-    }
+
+def scanner_gemini_vision(imagens, modo_analise):
+    # Executa o scanner funcional original dentro do GarageHub.
+    api_key = st.secrets.get("GEMINI_API_KEY", "")
+
+    if not api_key:
+        return False, None, "GEMINI_API_KEY não encontrada nos Secrets do Streamlit."
+
+    partes_imagem = []
+
+    for foto in imagens:
+        parte = preparar_imagem_para_gemini(foto)
+        if parte:
+            partes_imagem.append(parte)
+
+    if not partes_imagem:
+        return False, None, "Nenhuma imagem válida foi encontrada. Tente tirar outra foto."
 
     try:
-        import requests
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-        resp = requests.post(url, json=payload, timeout=45)
-        if resp.status_code >= 400:
-            return None, f"Gemini retornou erro {resp.status_code}: {resp.text[:220]}"
-        data = resp.json()
-        texto = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-        dados = limpar_json_ia(texto)
-        if not dados:
-            return None, "A IA respondeu, mas não consegui interpretar o JSON."
-        return normalizar_resultado_scanner(dados), "ok"
+        client = genai.Client(api_key=api_key)
+        prompt = montar_prompt_scanner_garagehub(modo_analise)
+
+        resposta = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[prompt] + partes_imagem,
+            config={
+                "temperature": 0.2,
+                "response_mime_type": "application/json"
+            }
+        )
+
+        texto = resposta.text.strip()
+        dados = limpar_json_scanner(texto)
+        return True, dados, ""
+
     except Exception as e:
-        return None, f"Erro ao consultar Gemini Vision: {e}"
+        return False, None, f"Erro ao consultar/analisar com Gemini Vision: {e}"
 
 
-def buscar_web_scanner(termos, limite=6):
-    """Busca web leve para confirmar identificação."""
-    termos = str(termos or "").strip()
-    if not termos:
-        return []
+def valor_estimado_para_float(valor):
+    # Extrai um número aproximado de strings como 'R$ 80 a R$ 150'.
+    texto = str(valor or "")
+    nums = re.findall(r"\d+(?:[.,]\d+)?", texto)
+    if not nums:
+        return 0.0
 
-    resultados = []
-    try:
-        import requests
-        from urllib.parse import quote_plus, unquote
-        query = quote_plus(termos)
-        url = f"https://duckduckgo.com/html/?q={query}"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"}
-        resp = requests.get(url, headers=headers, timeout=18)
-        html_txt = resp.text
-        padrao = re.compile(r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', re.I | re.S)
-        for href, titulo in padrao.findall(html_txt):
-            titulo_limpo = re.sub(r"<.*?>", "", titulo)
-            titulo_limpo = html.unescape(titulo_limpo).strip()
-            href = html.unescape(href).strip()
-            if "uddg=" in href:
-                m = re.search(r"uddg=([^&]+)", href)
-                if m:
-                    href = unquote(m.group(1))
-            if titulo_limpo and href:
-                resultados.append({"titulo": titulo_limpo, "url": href, "fonte": "DuckDuckGo"})
-            if len(resultados) >= limite:
-                break
-    except Exception:
-        pass
+    valores = []
+    for n in nums:
+        try:
+            valores.append(float(n.replace(".", "").replace(",", ".")))
+        except Exception:
+            pass
 
-    if not resultados:
-        from urllib.parse import quote_plus
-        q = quote_plus(termos)
-        resultados = [
-            {"titulo": f"Pesquisar no Google: {termos}", "url": f"https://www.google.com/search?q={q}", "fonte": "Google"},
-            {"titulo": f"Pesquisar no eBay: {termos}", "url": f"https://www.ebay.com/sch/i.html?_nkw={q}", "fonte": "eBay"},
-            {"titulo": f"Pesquisar no Mercado Livre: {termos}", "url": f"https://lista.mercadolivre.com.br/{q}", "fonte": "Mercado Livre"},
-        ]
-    return resultados[:limite]
+    if not valores:
+        return 0.0
+
+    return sum(valores) / len(valores)
 
 
-def consolidar_scanner_com_web(resultado_ia, resultados_web):
-    resultado = dict(resultado_ia or {})
-    texto_web = " ".join([r.get("titulo", "") for r in (resultados_web or [])]).lower()
-    pontos = int(resultado.get("confianca") or 0)
-    for campo in ["nome", "marca", "serie", "sku", "ano"]:
-        valor = str(resultado.get(campo) or "").lower().strip()
-        if valor and valor not in ["a confirmar", "não identificado"]:
-            partes = [p for p in re.split(r"\W+", valor) if len(p) >= 3]
-            hits = sum(1 for p in partes[:6] if p in texto_web)
-            if hits:
-                pontos += min(hits * 4, 14)
-    resultado["confianca"] = max(0, min(pontos, 98))
-    resultado["fonte"] = "IA Vision + pesquisa web" if resultados_web else resultado.get("fonte", "IA Vision")
-    return resultado
+def normalizar_raridade_scanner(valor):
+    valor = str(valor or "Não identificado").strip()
+    opcoes = ["Comum", "TH", "STH", "Premium", "RLC", "Chase", "Especial", "Limitado", "Não identificado"]
+    for op in opcoes:
+        if valor.lower() == op.lower():
+            return op
+    return "Não identificado"
 
 
-def detectar_mini_por_texto(nome_arquivo="", observacao=""):
-    bruto_original = f"{observacao or nome_arquivo or ''}".strip()
-    bruto = bruto_original.lower()
+def render_resultado_scanner_garagehub(dados):
+    st.success("Mini analisado com sucesso!")
 
-    marca = "A confirmar"
-    for chave, valor in [
-        ("hot wheels", "Hot Wheels"), ("hotwheels", "Hot Wheels"),
-        ("mini gt", "Mini GT"), ("minigt", "Mini GT"),
-        ("kaido", "Mini GT / Kaido House"), ("matchbox", "Matchbox"),
-        ("tomica", "Tomica"), ("greenlight", "GreenLight"),
-        ("m2 machines", "M2 Machines"), ("tarmac", "Tarmac Works"),
-        ("inno64", "Inno64"),
-    ]:
-        if chave in bruto:
-            marca = valor
-            break
+    st.markdown('<div class="scanner-result hall-glow">', unsafe_allow_html=True)
+    st.markdown('<span class="badge-vip">AI GARAGE RESULT</span>', unsafe_allow_html=True)
 
-    raridade = "Não identificado"
-    if "super treasure" in bruto or " sth" in bruto:
-        raridade = "STH"
-    elif "rlc" in bruto or "red line club" in bruto:
-        raridade = "RLC"
-    elif "chase" in bruto:
-        raridade = "Chase"
-    elif any(x in bruto for x in ["premium", "boulevard", "car culture", "team transport"]):
-        raridade = "Premium"
-    elif "treasure hunt" in bruto or " th" in bruto:
-        raridade = "TH"
-    elif any(x in bruto for x in ["especial", "limited", "exclusive"]):
-        raridade = "Especial"
-    elif "comum" in bruto:
-        raridade = "Comum"
+    st.subheader("🚗 Resultado principal")
 
-    ano = ""
-    m = re.search(r"(20\d{2}|19\d{2})", bruto)
-    if m:
-        ano = m.group(1)
+    campos_principais = [
+        "modelo_detectado",
+        "fabricante_detectado",
+        "marca_linha",
+        "possivel_serie",
+        "possivel_raridade",
+        "valor_estimado_brasil",
+        "nivel_confianca",
+        "alerta_colecao"
+    ]
 
-    serie = ""
-    for chave, valor in [("gulf", "Gulf"), ("fast", "Fast & Furious"), ("furious", "Fast & Furious"), ("boulevard", "Boulevard"), ("car culture", "Car Culture"), ("kaido", "Kaido House")]:
-        if chave in bruto:
-            serie = valor
-            break
+    for campo in campos_principais:
+        valor = dados.get(campo, "Não identificado")
+        st.markdown(
+            f'<div class="info-card"><b>{campo.replace("_", " ").title()}:</b> {html.escape(str(valor))}</div>',
+            unsafe_allow_html=True
+        )
 
-    nome_sugerido = bruto_original[:120] if bruto_original else "A confirmar"
-    conf = 10 + (20 if bruto_original else 0) + (10 if marca != "A confirmar" else 0) + (8 if serie else 0) + (8 if ano else 0) + (8 if raridade != "Não identificado" else 0)
-    return normalizar_resultado_scanner({
-        "nome": nome_sugerido,
-        "marca": marca,
-        "serie": serie,
-        "ano": ano,
-        "raridade": raridade,
-        "valor_estimado": 0,
-        "confianca": min(conf, 58),
-        "busca_sugerida": bruto_original,
-        "fonte": "Texto + busca web",
-        "observacao": "Fallback por texto. Para mini solto, configure GEMINI_API_KEY para leitura visual."
-    })
+    with st.expander("📋 Ver ficha completa"):
+        for chave, valor in dados.items():
+            if chave != "itens_detectados":
+                st.write(f"**{chave.replace('_', ' ').title()}:** {valor}")
 
+    itens = dados.get("itens_detectados", [])
+    if itens:
+        with st.expander("🖼️ Itens detectados no expositor/coleção"):
+            for item in itens:
+                st.write(item)
 
-def render_resultados_web_scanner(resultados_web):
-    if not resultados_web:
-        st.info("Nenhum resultado web encontrado agora.")
-        return
-    st.markdown("#### 🌐 Confirmação na internet")
-    for item in resultados_web[:6]:
-        titulo = html.escape(str(item.get("titulo") or "Resultado"))
-        url = html.escape(str(item.get("url") or "#"), quote=True)
-        fonte = html.escape(str(item.get("fonte") or "Web"))
-        st.markdown(f'''
-        <div class="notify-item">
-            <strong>{titulo}</strong><br>
-            Fonte: {fonte}<br>
-            <a href="{url}" target="_blank" style="color:#7dd3fc;font-weight:900;">Abrir resultado</a>
-        </div>
-        ''', unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.download_button(
+        "⬇️ Baixar JSON do mini",
+        data=json.dumps(dados, ensure_ascii=False, indent=2),
+        file_name="mini_scanner_resultado.json",
+        mime="application/json",
+        use_container_width=True
+    )
 
 
 def render_scanner_ia_demo():
+    # Scanner IA real integrado ao GarageHub, baseado no scanner funcional TRINANES AI GARAGE VISION.
     usuario_atual = st.session_state.get("usuario") or {}
     is_admin = usuario_atual.get("tipo") == "admin"
 
     st.markdown('''
     <div class="scanner-hero">
-        <div class="scanner-kicker">🤖 Scanner IA Real V18</div>
-        <h2>Scanner inteligente de miniaturas</h2>
-        <p>Analisa blister, mini solto, expositor ou coleção. O fluxo usa IA Vision quando configurada e depois pesquisa na internet para reforçar a identificação.</p>
+        <div class="scanner-kicker">📸 TRINANES AI GARAGE VISION</div>
+        <h2>Scanner Inteligente de Miniaturas</h2>
+        <p>Scanner real com Gemini Vision para blister, mini solto, expositor e coleção. Ele identifica o máximo possível sem inventar dados.</p>
     </div>
     <div class="pro-grid">
-        <div class="scanner-step"><h3>📷 1. Foto</h3><p>Use câmera ou envie imagem do blister/mini.</p></div>
-        <div class="scanner-step"><h3>🧠 2. IA Vision</h3><p>Lê textos, padrões visuais, cor, rodas, card e base.</p></div>
-        <div class="scanner-step"><h3>🌐 3. Busca Web</h3><p>Pesquisa pistas na internet e entrega resultado validável.</p></div>
+        <div class="scanner-step"><h3>🚗 Mini solto</h3><p>Analisa modelo, cor, rodas, decals e fabricante provável.</p></div>
+        <div class="scanner-step"><h3>📦 Blister</h3><p>Lê frente e verso para tentar SKU, série, ano e raridade.</p></div>
+        <div class="scanner-step"><h3>🖼️ Coleção</h3><p>Detecta múltiplos itens em expositor ou grupo de minis.</p></div>
     </div>
     ''', unsafe_allow_html=True)
 
-    gemini_ok = bool(obter_secret_valor("GEMINI_API_KEY", "GOOGLE_API_KEY"))
-    if gemini_ok:
-        st.success("IA Vision ativa: GEMINI_API_KEY encontrada nos secrets.")
+    modo_analise = st.selectbox(
+        "Tipo de análise",
+        [
+            "🚗 Mini solto",
+            "📦 Blister frente e verso",
+            "🖼️ Expositor / coleção",
+            "🔍 Modo automático"
+        ],
+        key="scanner_real_modo_analise"
+    )
+
+    opcao = st.radio(
+        "Como quer enviar a imagem?",
+        ["📷 Usar câmera", "🖼️ Enviar foto"],
+        horizontal=True,
+        key="scanner_real_opcao_imagem"
+    )
+
+    foto_1 = None
+    foto_2 = None
+    foto_3 = None
+
+    if opcao == "📷 Usar câmera":
+        foto_1 = st.camera_input("Foto principal", key="scanner_real_camera_1")
+
+        if modo_analise == "📦 Blister frente e verso":
+            foto_2 = st.camera_input("Foto do verso do blister", key="scanner_real_camera_2")
+        elif modo_analise in ["🖼️ Expositor / coleção", "🔍 Modo automático"]:
+            foto_2 = st.camera_input("Foto extra opcional", key="scanner_real_camera_2_extra")
+
     else:
-        st.warning("IA Vision ainda não está ativa neste app. Para reconhecer mini solto igual ao scanner antigo, configure GEMINI_API_KEY nos secrets do Streamlit.")
+        foto_1 = st.file_uploader("Foto principal", type=["jpg", "jpeg", "png", "webp"], key="scanner_real_upload_1")
 
-    tipo_analise = st.selectbox("Tipo de análise", ["Mini solto", "Blister/card", "Expositor", "Coleção inteira"], key="scanner_tipo_analise_v18")
-    modo = st.radio("Como quer enviar a imagem?", ["📷 Usar câmera", "🖼️ Enviar foto"], horizontal=True, key="scanner_modo_captura_v18")
-    entrada_img = None
-    if modo.startswith("📷"):
-        entrada_img = st.camera_input("Aponte a câmera para a mini/blister", key="scanner_camera_real_v18")
-    else:
-        entrada_img = st.file_uploader("Foto principal", type=["jpg", "jpeg", "png", "webp"], key="scanner_upload_real_v18")
+        if modo_analise == "📦 Blister frente e verso":
+            foto_2 = st.file_uploader("Foto do verso do blister", type=["jpg", "jpeg", "png", "webp"], key="scanner_real_upload_2")
+        elif modo_analise in ["🖼️ Expositor / coleção", "🔍 Modo automático"]:
+            foto_2 = st.file_uploader("Foto extra opcional", type=["jpg", "jpeg", "png", "webp"], key="scanner_real_upload_2_extra")
+            foto_3 = st.file_uploader("Mais uma foto opcional", type=["jpg", "jpeg", "png", "webp"], key="scanner_real_upload_3_extra")
 
-    obs = st.text_input("Pista opcional para ajudar a IA/busca", placeholder="Ex: Nissan Silvia, Kaido, R34, Gulf, Hot Wheels, número do card, SKU...", key="scanner_obs_texto_v18")
+    imagens_validas = [f for f in [foto_1, foto_2, foto_3] if f is not None]
 
-    if entrada_img is not None:
-        st.image(entrada_img, caption="Imagem recebida pelo Scanner IA Real", use_container_width=True)
+    if imagens_validas:
+        st.markdown("### 👀 Prévia enviada")
+        for idx, foto in enumerate(imagens_validas, start=1):
+            st.image(foto, caption=f"Imagem {idx}", use_container_width=True)
 
-    analisar = st.button("🔥 Analisar mini agora", key="scanner_analisar_v18", use_container_width=True)
+    if "scanner_ultimo_resultado" not in st.session_state:
+        st.session_state["scanner_ultimo_resultado"] = None
+    if "scanner_ultimas_imagens" not in st.session_state:
+        st.session_state["scanner_ultimas_imagens"] = []
 
-    if analisar:
-        if entrada_img is None and not obs:
-            st.warning("Envie uma foto ou informe uma pista para analisar.")
+    if st.button("🔥 Analisar mini com IA", use_container_width=True, key="scanner_real_analisar"):
+        if not imagens_validas:
+            st.error("Envie pelo menos uma foto.")
             return
 
-        with st.spinner("Analisando imagem com IA e pesquisando na internet..."):
-            resultado = None
-            status_ia = ""
-            if entrada_img is not None:
-                resultado, status_ia = chamar_gemini_vision_scanner(entrada_img, tipo_analise, obs)
+        with st.spinner("Analisando com Gemini Vision..."):
+            ok, dados, erro = scanner_gemini_vision(imagens_validas, modo_analise)
 
-            if resultado is None:
-                resultado = detectar_mini_por_texto(getattr(entrada_img, "name", "") if entrada_img else "", obs)
-                resultado["observacao"] = f"{resultado.get('observacao','')} | IA Vision não usada: {status_ia}"
+        if not ok:
+            st.error("Erro ao consultar a IA.")
+            st.info("Possíveis causas: limite da API, chave inválida, billing desativado ou imagem muito pesada.")
+            st.code(erro)
+            return
 
-            termos_busca = resultado.get("busca_sugerida") or " ".join([
-                str(resultado.get("marca") or ""), str(resultado.get("nome") or ""),
-                str(resultado.get("serie") or ""), str(resultado.get("sku") or ""),
-                str(resultado.get("ano") or ""), "diecast 1/64"
-            ]).strip()
+        st.session_state["scanner_ultimo_resultado"] = dados
+        st.session_state["scanner_ultimas_imagens"] = imagens_validas
 
-            if obs and obs.lower() not in termos_busca.lower():
-                termos_busca = f"{termos_busca} {obs}".strip()
+    dados = st.session_state.get("scanner_ultimo_resultado")
 
-            resultados_web = buscar_web_scanner(termos_busca)
-            resultado = consolidar_scanner_com_web(resultado, resultados_web)
-            st.session_state["scanner_v18_resultado"] = resultado
-            st.session_state["scanner_v18_web"] = resultados_web
-            st.session_state["scanner_v18_img_nome"] = getattr(entrada_img, "name", "scanner") if entrada_img else ""
-            st.session_state["scanner_v18_tipo"] = tipo_analise
-
-    resultado = st.session_state.get("scanner_v18_resultado")
-    resultados_web = st.session_state.get("scanner_v18_web") or []
-
-    if not resultado:
-        st.info("Envie uma imagem e clique em analisar para gerar uma identificação validável.")
+    if not dados:
+        st.info("Envie uma foto e clique em analisar para obter a ficha do mini.")
         return
 
-    st.markdown(f'''
-    <div class="scanner-result">
-        <div class="scanner-score">{int(resultado.get('confianca') or 0)}%</div>
-        <h3>Resultado sugerido pelo Scanner IA Real</h3>
-        <p><b>{html.escape(str(resultado.get('nome') or 'A confirmar'))}</b> • {html.escape(str(resultado.get('marca') or 'A confirmar'))} • {html.escape(str(resultado.get('raridade') or 'Não identificado'))}</p>
-        <p>Série: <b>{html.escape(str(resultado.get('serie') or 'A confirmar'))}</b> • Ano: <b>{html.escape(str(resultado.get('ano') or 'A confirmar'))}</b> • SKU: <b>{html.escape(str(resultado.get('sku') or 'A confirmar'))}</b></p>
-        <p>Cor: <b>{html.escape(str(resultado.get('cor') or 'A confirmar'))}</b> • Fonte: <b>{html.escape(str(resultado.get('fonte') or 'IA + Web'))}</b></p>
-        <p>{html.escape(str(resultado.get('observacao') or 'Valide antes de salvar.'))}</p>
-    </div>
-    ''', unsafe_allow_html=True)
+    render_resultado_scanner_garagehub(dados)
 
-    if resultado.get("texto_lido"):
-        with st.expander("🔎 Texto lido / pistas da imagem", expanded=False):
-            st.write(resultado.get("texto_lido"))
+    nome_sugerido = dados.get("modelo_detectado") or "Mini identificada pelo scanner"
+    marca_sugerida = dados.get("fabricante_detectado") or dados.get("marca_linha") or "Não identificado"
+    serie_sugerida = dados.get("possivel_serie") or dados.get("marca_linha") or ""
+    ano_sugerido = dados.get("ano_lancamento") or ""
+    raridade_sugerida = normalizar_raridade_scanner(dados.get("possivel_raridade"))
+    valor_estimado_sugerido = valor_estimado_para_float(dados.get("valor_estimado_brasil"))
 
-    render_resultados_web_scanner(resultados_web)
+    st.markdown('<div class="checkout-box"><h3>✅ Validação antes de salvar</h3><p>Confira os dados sugeridos pela IA antes de lançar no GarageHub.</p></div>', unsafe_allow_html=True)
 
-    with st.expander("✅ Validar / ajustar antes de salvar", expanded=True):
+    with st.expander("✏️ Ajustar dados antes de salvar", expanded=True):
         c1, c2 = st.columns(2)
+
         with c1:
-            s_nome = st.text_input("Nome identificado", value=resultado.get("nome") or "", key="scanner_nome_sugerido_v18")
-            s_marca = st.text_input("Marca", value=resultado.get("marca") or "", key="scanner_marca_sugerida_v18")
-            s_serie = st.text_input("Série / Linha", value=resultado.get("serie") or resultado.get("linha") or "", key="scanner_serie_sugerida_v18")
-            s_ano = st.text_input("Ano", value=resultado.get("ano") or "", key="scanner_ano_sugerido_v18")
-            s_sku = st.text_input("SKU / Código", value=resultado.get("sku") or "", key="scanner_sku_sugerido_v18")
+            s_nome = st.text_input("Nome / modelo", value=str(nome_sugerido), key="scanner_real_nome_final")
+            s_marca = st.text_input("Fabricante / marca", value=str(marca_sugerida), key="scanner_real_marca_final")
+            s_serie = st.text_input("Série / linha", value=str(serie_sugerida), key="scanner_real_serie_final")
+            s_ano = st.text_input("Ano", value=str(ano_sugerido), key="scanner_real_ano_final")
+
         with c2:
-            opcoes_r = ["Não identificado", "Comum", "TH", "STH", "Premium", "RLC", "Chase", "Especial", "Limitado"]
-            raridade_atual = resultado.get("raridade") if resultado.get("raridade") in opcoes_r else "Não identificado"
-            s_raridade = st.selectbox("Raridade", opcoes_r, index=opcoes_r.index(raridade_atual), key="scanner_raridade_sugerida_v18")
-            s_valor = st.number_input("Preço/valor sugerido", min_value=0.0, step=1.0, value=float(resultado.get("valor") or 0), key="scanner_valor_sugerido_v18")
-            s_estimado = st.number_input("Valor estimado", min_value=0.0, step=1.0, value=float(resultado.get("valor_estimado") or resultado.get("valor") or 0), key="scanner_estimado_sugerido_v18")
-            s_destaque = st.text_input("Destaque", value=f"Scanner IA Real V18 • SKU: {s_sku}" if s_sku else "Scanner IA Real V18", key="scanner_destaque_sugerido_v18")
+            opcoes_r = ["Comum", "TH", "STH", "Premium", "RLC", "Chase", "Especial", "Limitado", "Não identificado"]
+            idx_r = opcoes_r.index(raridade_sugerida) if raridade_sugerida in opcoes_r else opcoes_r.index("Não identificado")
+            s_raridade = st.selectbox("Raridade", opcoes_r, index=idx_r, key="scanner_real_raridade_final")
+            s_valor_pago = st.number_input("Valor pago", min_value=0.0, step=1.0, value=0.0, key="scanner_real_valor_pago_final")
+            s_valor_estimado = st.number_input("Valor estimado", min_value=0.0, step=1.0, value=float(valor_estimado_sugerido or 0), key="scanner_real_estimado_final")
+            s_destaque = st.text_area(
+                "Observações",
+                value=str(dados.get("observacoes") or dados.get("alerta_colecao") or "Scanner IA GarageHub"),
+                key="scanner_real_obs_final"
+            )
+
+    imagens_para_salvar = st.session_state.get("scanner_ultimas_imagens") or []
+    foto_principal = imagens_para_salvar[0] if imagens_para_salvar else None
 
     if is_admin:
-        st.markdown('<div class="checkout-box"><h3>👑 Ações de admin</h3><p>Valide o resultado e publique na loja ou lance na garagem de um cliente.</p></div>', unsafe_allow_html=True)
+        st.markdown('<div class="checkout-box"><h3>👑 Ações de admin</h3><p>Publique na loja ou lance direto na garagem de um cliente.</p></div>', unsafe_allow_html=True)
+
         ac1, ac2 = st.columns(2)
+
         with ac1:
-            if st.button("🛒 Publicar resultado validado na loja", key="scanner_publicar_loja_v18", use_container_width=True):
-                foto_url = upload_storage(entrada_img, "scanner", s_nome) if entrada_img is not None else ""
+            if st.button("🛒 Publicar sugestão na loja", key="scanner_real_publicar_loja", use_container_width=True):
+                foto_url = upload_storage(foto_principal, "scanner", s_nome) if foto_principal is not None else ""
                 try:
-                    cadastrar_loja_mini(s_nome, s_marca, s_serie, s_ano, s_raridade, s_valor, s_estimado, foto_url, "disponivel", s_destaque)
-                    st.success("Mini publicada na loja com dados validados.")
+                    cadastrar_loja_mini(
+                        s_nome, s_marca, s_serie, s_ano, s_raridade,
+                        s_valor_estimado, s_valor_estimado, foto_url,
+                        "disponivel", s_destaque
+                    )
+                    st.success("Mini publicada na loja usando o Scanner IA real.")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Não consegui publicar na loja. Detalhe: {e}")
+
         with ac2:
             try:
                 clientes_scanner = [u for u in listar_usuarios() if u.get("tipo") != "admin"]
             except Exception:
                 clientes_scanner = []
+
             if clientes_scanner:
                 mapa_clientes = {f"{c.get('nome','')} — {c.get('email','')}": c for c in clientes_scanner}
-                cliente_label = st.selectbox("Cliente para lançar na garagem", list(mapa_clientes.keys()), key="scanner_cliente_garagem_v18")
-                if st.button("🏎️ Lançar resultado validado na garagem", key="scanner_lancar_garagem_v18", use_container_width=True):
-                    foto_url = upload_storage(entrada_img, "scanner", s_nome) if entrada_img is not None else ""
+                cliente_label = st.selectbox("Cliente para lançar na garagem", list(mapa_clientes.keys()), key="scanner_real_cliente_garagem")
+
+                if st.button("🏎️ Lançar na garagem do cliente", key="scanner_real_lancar_garagem", use_container_width=True):
+                    foto_url = upload_storage(foto_principal, "scanner", s_nome) if foto_principal is not None else ""
                     cliente_sel = mapa_clientes[cliente_label]
-                    cadastrar_mini(cliente_sel["id"], s_nome, s_marca, s_serie, s_ano, s_raridade, s_valor, s_estimado, foto_url, "pago", "scanner/ia-real", s_destaque)
-                    st.success("Mini lançada na garagem do cliente com dados validados.")
+
+                    cadastrar_mini(
+                        cliente_sel["id"],
+                        s_nome,
+                        s_marca,
+                        s_serie,
+                        s_ano,
+                        s_raridade,
+                        s_valor_pago,
+                        s_valor_estimado,
+                        foto_url,
+                        "pago",
+                        "scanner/admin",
+                        s_destaque
+                    )
+
+                    try:
+                        supabase.table("scanner_logs").insert({
+                            "usuario_id": cliente_sel.get("id"),
+                            "imagem_url": foto_url,
+                            "resultado": json.dumps(dados, ensure_ascii=False),
+                            "confianca": str(dados.get("nivel_confianca") or "")
+                        }).execute()
+                    except Exception:
+                        pass
+
+                    st.success("Mini lançada na garagem do cliente a partir do Scanner IA real.")
                     st.rerun()
             else:
                 st.info("Cadastre clientes para lançar direto na garagem.")
+
     else:
-        st.markdown('<div class="checkout-box"><h3>🏁 Enviar para validação</h3><p>O scanner sugere os dados; o admin valida antes de lançar oficialmente.</p></div>', unsafe_allow_html=True)
-        if st.button("📨 Enviar leitura IA para validação do admin", key="scanner_enviar_admin_validacao_v18", use_container_width=True):
-            if entrada_img is None:
-                st.warning("Envie ou capture uma foto antes de mandar para o admin.")
-            else:
-                foto_url = upload_storage(entrada_img, "scanner", f"cliente_{usuario_atual.get('id')}_{s_nome}")
-                resumo = f"{s_nome} | {s_marca} | {s_serie} | {s_ano} | {s_raridade} | SKU {s_sku} | confiança {resultado.get('confianca')}% | valor {money(s_valor)}"
-                ok = registrar_scanner_log(usuario_atual.get("id"), foto_url, resumo, resultado.get("confianca"), "pendente")
-                if ok:
-                    st.success("Leitura enviada para o admin validar e lançar na garagem.")
-                    st.balloons()
-                else:
-                    st.error("Não consegui gravar a solicitação. Verifique a tabela scanner_logs no Supabase.")
+        st.markdown('<div class="checkout-box"><h3>🏁 Solicitação para validação</h3><p>Envie a leitura para o admin validar antes de lançar oficialmente na sua garagem.</p></div>', unsafe_allow_html=True)
+
+        if st.button("📨 Enviar leitura para validação do admin", key="scanner_real_enviar_validacao", use_container_width=True):
+            foto_url = upload_storage(foto_principal, "scanner", s_nome) if foto_principal is not None else ""
+
+            try:
+                supabase.table("scanner_logs").insert({
+                    "usuario_id": usuario_atual.get("id"),
+                    "imagem_url": foto_url,
+                    "resultado": json.dumps({
+                        "dados_ia": dados,
+                        "dados_validados_cliente": {
+                            "nome": s_nome,
+                            "marca": s_marca,
+                            "serie": s_serie,
+                            "ano": s_ano,
+                            "raridade": s_raridade,
+                            "valor_pago": s_valor_pago,
+                            "valor_estimado": s_valor_estimado,
+                            "observacoes": s_destaque,
+                        }
+                    }, ensure_ascii=False),
+                    "confianca": str(dados.get("nivel_confianca") or "")
+                }).execute()
+
+                st.success("Leitura enviada para validação do admin.")
+            except Exception as e:
+                st.warning(f"Não consegui gravar a solicitação no scanner_logs. Detalhe: {e}")
 
 
 # =========================
@@ -4330,134 +4334,6 @@ def render_grade_numeros_rifa(rifa, numeros, clientes_por_id):
     """, unsafe_allow_html=True)
 
 
-
-
-def render_animacao_sorteio_rifa(rifa, resultado_msg, numero_final=None):
-    # Popup centralizado estilo Sorteador.com: overlay real no centro da tela via documento pai.
-    try:
-        qtd_total = int(rifa.get("qtd_numeros") or 100)
-    except Exception:
-        qtd_total = 100
-
-    largura = max(2, len(str(qtd_total)))
-
-    try:
-        numero_final_int = int(numero_final or rifa.get("numero_sorteado") or 0)
-    except Exception:
-        numero_final_int = 0
-
-    final_label = "TOP" if numero_final_int <= 0 else str(numero_final_int).zfill(largura)
-    resultado_safe = html.escape(str(resultado_msg or "Resultado apurado."))
-    titulo_safe = html.escape(str(rifa.get("titulo") or "Rifa GarageHub"))
-
-    random.seed(str(rifa.get("id") or "") + str(datetime.now()))
-    faixa = list(range(1, max(qtd_total, 2) + 1))
-    amostra = random.sample(faixa, min(28, len(faixa))) if faixa else []
-    if numero_final_int > 0 and numero_final_int not in amostra:
-        amostra.append(numero_final_int)
-
-    strip = "".join(f"<span>{str(n).zfill(largura)}</span>" for n in amostra[:28])
-    # V15.9: contador regressivo controlado por JavaScript (mais confiável que CSS animation no Streamlit)
-    countdown_spans = '<span id="gh-count-value">10</span>'
-
-    popup_html = f'''
-    <div id="gh-sorteio-overlay" class="gh-sorteio-overlay">
-        <div class="gh-sorteio-popup">
-            <button class="gh-sorteio-close" type="button">×</button>
-            <div class="gh-sorteio-content">
-                <div class="gh-sorteio-kicker">🎰 Sorteio ao vivo GarageHub</div>
-                <h2 class="gh-sorteio-title">{titulo_safe}</h2>
-                <p class="gh-sorteio-subtitle">Contagem regressiva oficial...</p>
-                <div class="gh-countdown-stage"><div class="gh-countdown-ring"><div class="gh-countdown">{countdown_spans}</div></div></div>
-                <div class="gh-rolling-label">Sorteando número...</div>
-                <div class="gh-roller-strip"><div class="gh-roller-track">{strip}{strip}</div></div>
-                <div class="gh-final-area">
-                    <div class="gh-final-label">Número sorteado</div>
-                    <div class="gh-final-number">{final_label}</div>
-                    <div class="gh-final-result">{resultado_safe}</div>
-                    <div class="gh-final-help">Feche no X ou atualize a tela para ver o resultado gravado no card da rifa.</div>
-                </div>
-            </div>
-        </div>
-    </div>
-    '''
-
-    css = '''
-    <style id="gh-sorteio-style">
-    .gh-sorteio-overlay{position:fixed!important;inset:0!important;z-index:2147483647!important;display:flex!important;align-items:center!important;justify-content:center!important;padding:24px!important;box-sizing:border-box!important;background:radial-gradient(circle at center,rgba(250,204,21,.20),transparent 34%),rgba(2,6,23,.90)!important;backdrop-filter:blur(13px)!important;-webkit-backdrop-filter:blur(13px)!important;animation:ghOverlayEntrada .25s ease-out both!important}
-    .gh-sorteio-popup{width:min(780px,94vw)!important;max-height:92vh!important;overflow:hidden!important;border-radius:34px!important;padding:34px!important;text-align:center!important;position:relative!important;background:radial-gradient(circle at top left,rgba(250,204,21,.25),transparent 32%),radial-gradient(circle at bottom right,rgba(56,189,248,.14),transparent 34%),linear-gradient(145deg,rgba(15,23,42,.98),rgba(2,6,23,.99))!important;border:2px solid rgba(250,204,21,.65)!important;box-shadow:0 0 80px rgba(250,204,21,.24),0 35px 90px rgba(0,0,0,.74)!important;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif!important}
-    .gh-sorteio-popup:before{content:"";position:absolute;inset:-55%;background:conic-gradient(from 180deg,transparent,rgba(250,204,21,.20),transparent,rgba(56,189,248,.14),transparent);animation:ghSorteioSpin 6s linear infinite;pointer-events:none}
-    .gh-sorteio-close{position:absolute!important;top:14px!important;right:16px!important;z-index:5!important;width:38px!important;height:38px!important;border-radius:999px!important;border:1px solid rgba(250,204,21,.40)!important;background:rgba(2,6,23,.78)!important;color:#facc15!important;font-size:26px!important;line-height:1!important;cursor:pointer!important;font-weight:900!important}
-    .gh-sorteio-content{position:relative!important;z-index:2!important}.gh-sorteio-kicker{display:inline-flex!important;padding:9px 16px!important;border-radius:999px!important;background:rgba(250,204,21,.15)!important;border:1px solid rgba(250,204,21,.45)!important;color:#fde68a!important;font-size:12px!important;font-weight:950!important;letter-spacing:.8px!important;text-transform:uppercase!important;margin-bottom:14px!important}
-    .gh-sorteio-title{margin:0!important;color:#f8fafc!important;font-size:34px!important;font-weight:950!important}.gh-sorteio-subtitle{margin:8px 0 20px!important;color:#cbd5e1!important;font-size:16px!important;font-weight:850!important}
-    .gh-countdown-stage{height:178px!important;display:flex!important;align-items:center!important;justify-content:center!important;margin:4px auto 14px!important;position:relative!important}.gh-countdown-ring{width:166px!important;height:166px!important;border-radius:999px!important;position:relative!important;display:flex!important;align-items:center!important;justify-content:center!important;background:radial-gradient(circle at center,#020617 48%,transparent 49%),conic-gradient(#facc15 0deg,#f97316 260deg,rgba(250,204,21,.18) 360deg)!important;box-shadow:inset 0 0 28px rgba(0,0,0,.65),0 0 46px rgba(250,204,21,.32)!important;animation:ghRingPulse 1s ease-in-out infinite!important}
-    .gh-countdown{position:absolute!important;inset:0!important;display:flex!important;align-items:center!important;justify-content:center!important}.gh-countdown span{position:absolute!important;opacity:0;color:#facc15!important;font-size:82px!important;font-weight:950!important;line-height:1!important;text-shadow:0 0 28px rgba(250,204,21,.55)!important;animation:ghCountNumber 10s linear forwards!important}
-    .gh-rolling-label{color:#94a3b8!important;font-size:13px!important;font-weight:950!important;text-transform:uppercase!important;letter-spacing:1px!important;margin-bottom:8px!important;animation:ghHideAfterCount 10s linear forwards!important}.gh-roller-strip{width:100%!important;overflow:hidden!important;border-radius:18px!important;padding:12px 0!important;background:rgba(2,6,23,.58)!important;border:1px solid rgba(148,163,184,.15)!important;animation:ghHideAfterCount 10s linear forwards!important}.gh-roller-track{display:inline-flex!important;gap:10px!important;white-space:nowrap!important;animation:ghTrackRun 1.2s linear infinite!important}.gh-roller-track span{min-width:58px!important;height:42px!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;border-radius:14px!important;background:rgba(56,189,248,.12)!important;border:1px solid rgba(56,189,248,.28)!important;color:#7dd3fc!important;font-size:18px!important;font-weight:950!important}
-    .gh-final-area{opacity:0;transform:scale(.82) translateY(12px);animation:ghRevealWinner .75s ease-out 10s forwards!important;margin-top:-202px!important;min-height:245px!important;display:flex!important;flex-direction:column!important;align-items:center!important;justify-content:center!important}.gh-final-label{color:#86efac!important;font-size:18px!important;font-weight:950!important;text-transform:uppercase!important;letter-spacing:1px!important;margin-bottom:14px!important}.gh-final-number{min-width:184px!important;min-height:184px!important;border-radius:999px!important;display:flex!important;align-items:center!important;justify-content:center!important;background:linear-gradient(135deg,#facc15,#f97316)!important;color:#111827!important;font-size:80px!important;font-weight:950!important;box-shadow:0 0 70px rgba(250,204,21,.52),0 28px 70px rgba(0,0,0,.55)!important;border:6px solid rgba(255,255,255,.14)!important;animation:ghWinnerPop .9s ease-out 10s both!important}.gh-final-result{margin-top:18px!important;color:#f8fafc!important;font-size:18px!important;font-weight:900!important;line-height:1.45!important;max-width:680px!important}.gh-final-help{margin-top:14px!important;color:#94a3b8!important;font-size:13px!important;font-weight:850!important}
-    @keyframes ghOverlayEntrada{from{opacity:0}to{opacity:1}}@keyframes ghSorteioSpin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}@keyframes ghRingPulse{0%,100%{transform:scale(.98);filter:brightness(.98)}50%{transform:scale(1.04);filter:brightness(1.18)}}@keyframes ghCountNumber{0%,8%{opacity:1;transform:scale(.78)}10%{opacity:1;transform:scale(1.10)}11%,100%{opacity:0;transform:scale(1.38)}}@keyframes ghTrackRun{from{transform:translateX(0)}to{transform:translateX(-50%)}}@keyframes ghHideAfterCount{0%,99%{opacity:1;visibility:visible}100%{opacity:0;visibility:hidden}}@keyframes ghRevealWinner{to{opacity:1;transform:scale(1) translateY(0)}}@keyframes ghWinnerPop{0%{transform:scale(.25) rotate(-12deg);opacity:0}70%{transform:scale(1.10) rotate(3deg);opacity:1}100%{transform:scale(1) rotate(0);opacity:1}}
-    @media(max-width:720px){.gh-sorteio-popup{padding:24px 16px!important;border-radius:26px!important}.gh-sorteio-title{font-size:26px!important}.gh-countdown-ring{width:142px!important;height:142px!important}.gh-countdown span{font-size:68px!important}.gh-final-number{min-width:146px!important;min-height:146px!important;font-size:62px!important}.gh-final-result{font-size:15px!important}}
-
-    /* V15.9 - Contagem regressiva real via JS */
-    .gh-countdown span{opacity:1!important;animation:ghCountPulse .42s ease-in-out infinite!important;color:#facc15!important;font-size:88px!important;font-weight:950!important;line-height:1!important;text-shadow:0 0 30px rgba(250,204,21,.60)!important}
-    .gh-final-area{display:none!important;opacity:0!important;transform:scale(.84) translateY(12px)!important;animation:none!important;margin-top:20px!important;min-height:245px!important}
-    .gh-final-number{animation:none!important}
-    .gh-sorteio-overlay.gh-revelado .gh-countdown-stage,
-    .gh-sorteio-overlay.gh-revelado .gh-rolling-label,
-    .gh-sorteio-overlay.gh-revelado .gh-roller-strip{display:none!important}
-    .gh-sorteio-overlay.gh-revelado .gh-final-area{display:flex!important;opacity:1!important;transform:scale(1) translateY(0)!important;animation:ghRevealWinner .75s ease-out both!important}
-    .gh-sorteio-overlay.gh-revelado .gh-final-number{animation:ghWinnerPop .9s ease-out both!important}
-    .gh-sorteio-overlay.gh-revelado .gh-sorteio-subtitle{color:#86efac!important}
-    @keyframes ghCountPulse{0%,100%{transform:scale(.96);filter:brightness(.95)}50%{transform:scale(1.10);filter:brightness(1.25)}}
-    @media(max-width:720px){.gh-countdown span{font-size:72px!important}}
-    </style>
-    '''
-
-    import json
-    payload_html = json.dumps(popup_html)
-    payload_css = json.dumps(css)
-
-    injector = f'''
-    <script>
-    const popupHtml = {payload_html};
-    const popupCss = {payload_css};
-    const doc = window.parent.document;
-    const antigo = doc.getElementById('gh-sorteio-overlay');
-    if (antigo) antigo.remove();
-    const oldStyle = doc.getElementById('gh-sorteio-style');
-    if (oldStyle) oldStyle.remove();
-    const styleWrap = doc.createElement('div');
-    styleWrap.innerHTML = popupCss;
-    doc.head.appendChild(styleWrap.firstElementChild);
-    const wrap = doc.createElement('div');
-    wrap.innerHTML = popupHtml;
-    doc.body.appendChild(wrap.firstElementChild);
-    doc.body.style.overflow = 'hidden';
-    const overlay = doc.getElementById('gh-sorteio-overlay');
-    const liberarScroll = () => {{ doc.body.style.overflow = ''; }};
-    overlay?.querySelector('.gh-sorteio-close')?.addEventListener('click', () => {{ overlay.remove(); liberarScroll(); }});
-
-    // V15.9: contador regressivo visível de 10 segundos, estilo Sorteador.com
-    let ghRestante = 10;
-    const contador = overlay?.querySelector('#gh-count-value');
-    const subtitulo = overlay?.querySelector('.gh-sorteio-subtitle');
-    if (contador) contador.textContent = String(ghRestante);
-    const ghTimer = setInterval(() => {{
-        ghRestante -= 1;
-        if (ghRestante >= 1) {{
-            if (contador) contador.textContent = String(ghRestante);
-        }} else {{
-            clearInterval(ghTimer);
-            if (subtitulo) subtitulo.textContent = 'Resultado oficial revelado!';
-            overlay?.classList.add('gh-revelado');
-        }}
-    }}, 1000);
-
-    setTimeout(() => {{ liberarScroll(); }}, 45000);
-    </script>
-    '''
-
-    components.html(injector, height=0, scrolling=False)
-
 def render_rifas_admin(clientes):
     st.markdown("""
     <div class="admin-work-card">
@@ -4764,16 +4640,8 @@ def render_rifas_admin(clientes):
                     ok, msg = processar_resultado_rifa(rifa, numeros, clientes, rifas)
                     if ok:
                         st.balloons()
-                        st.success("🎉 Sorteio/apuração concluído com sucesso!")
-                        numero_final_animacao = None
-                        try:
-                            if str(rifa.get("modo_premiacao") or "") in ["sorteio_normal", "hibrida", "sorteio_top_comprador", "sorteio_top_ganhador"]:
-                                match_numero = re.search(r"número\s+(\d+)", msg)
-                                numero_final_animacao = int(match_numero.group(1)) if match_numero else None
-                        except Exception:
-                            numero_final_animacao = None
-                        render_animacao_sorteio_rifa(rifa, msg, numero_final_animacao)
-                        st.info("Depois da revelação, feche o popup ou atualize a tela para ver o resultado oficial gravado no card.")
+                        st.success(msg)
+                        st.rerun()
                     else:
                         st.warning(msg)
             with ac2:
@@ -4988,149 +4856,6 @@ def render_rifas_cliente(usuario):
                     })
                 st.dataframe(linhas, use_container_width=True, hide_index=True)
 
-
-
-
-# =========================
-# CARTEIRINHA QR PREMIUM — V18.1 FIX
-# =========================
-def gerar_qr_data_uri(texto):
-    """Gera QR real e legível. Se o pacote qrcode não existir no ambiente, usa serviço público de QR."""
-    texto = str(texto or "GarageHub").strip()
-    if not texto:
-        texto = "GarageHub"
-
-    try:
-        import io
-        import qrcode
-        qr = qrcode.QRCode(
-            version=None,
-            error_correction=qrcode.constants.ERROR_CORRECT_H,
-            box_size=12,
-            border=4,
-        )
-        qr.add_data(texto)
-        qr.make(fit=True)
-        img = qr.make_image(fill_color="black", back_color="white")
-        buffer = io.BytesIO()
-        img.save(buffer, format="PNG")
-        return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("utf-8")
-    except Exception:
-        # Fallback: ainda mostra um QR verdadeiro, sem depender de biblioteca Python instalada.
-        try:
-            from urllib.parse import quote
-            return "https://api.qrserver.com/v1/create-qr-code/?size=320x320&margin=20&data=" + quote(texto, safe="")
-        except Exception:
-            return ""
-
-
-def calcular_meu_item_gamificacao(usuario):
-    try:
-        usuarios_rank = listar_usuarios()
-        minis_rank = buscar_todas_minis()
-        try:
-            rifas_rank = buscar_rifas()
-        except Exception:
-            rifas_rank = []
-        rifa_numeros_rank = buscar_todos_numeros_rifas()
-        clientes = [u for u in usuarios_rank if u.get("tipo") != "admin"]
-        ranking = calcular_gamificacao_clientes(clientes, minis_rank, rifas_rank, rifa_numeros_rank)
-        uid = str(usuario.get("id"))
-        for pos, item in enumerate(ranking, start=1):
-            if str((item.get("cliente") or {}).get("id")) == uid:
-                item["posicao"] = pos
-                item["total_ranking"] = len(ranking)
-                return item
-    except Exception:
-        pass
-    return {
-        "posicao": "-", "pontos": 0, "nivel_label": "🥉 Bronze",
-        "titulo_publico": "🚘 Colecionador em Evolução", "conquistas": [],
-        "minis": 0, "raras": 0, "cotas": 0, "vitorias": 0,
-        "progresso": 0, "proximo_nivel": "Prata", "faltam": 1000,
-    }
-
-
-def render_carteirinha_qr_premium(usuario):
-    minis_usuario = []
-    try:
-        minis_usuario = buscar_minis(usuario.get("id"))
-    except Exception:
-        minis_usuario = []
-
-    item = calcular_meu_item_gamificacao(usuario)
-    codigo = str(usuario.get("codigo_membro") or f"GHW-{usuario.get('id', '')}")
-    nome = str(usuario.get("nome") or "Colecionador")
-    nivel = str(item.get("nivel_label") or "🥉 Bronze")
-    titulo = str(item.get("titulo_publico") or "🚘 Colecionador em Evolução")
-    posicao = item.get("posicao", "-")
-    pontos = int(item.get("pontos") or 0)
-    total_minis = len(minis_usuario or [])
-    raras = int(item.get("raras") or 0)
-    cotas = int(item.get("cotas") or 0)
-    vitorias = int(item.get("vitorias") or 0)
-    progresso = int(item.get("progresso") or 0)
-    link_publico = gerar_link_publico(usuario)
-    try:
-        app_base_url = str(st.secrets.get("APP_PUBLIC_URL", "")).strip().rstrip("/")
-    except Exception:
-        app_base_url = ""
-
-    # QR precisa abrir o app real. Se APP_PUBLIC_URL não estiver no Secrets,
-    # usamos a URL pública atual conhecida do GarageHub em vez de texto solto.
-    if not app_base_url:
-        app_base_url = "https://garageapp-app-dkmo9p5ec5vyvjqfjxrti8.streamlit.app"
-
-    payload_qr = f"{app_base_url}/?garagepass={codigo}&uid={usuario.get('id')}"
-    qr_src = gerar_qr_data_uri(payload_qr)
-    avatar = perfil_html(get_foto_perfil_usuario(usuario), nome)
-    conquistas = item.get("conquistas") or []
-    conquistas_html = "".join([f'<span class="garagepass-chip">{html.escape(str(c))}</span>' for c in conquistas[:5]]) or '<span class="garagepass-chip">🚀 Em evolução</span>'
-    qr_html = f'<img src="{html.escape(qr_src, quote=True)}" class="garagepass-qr-img" alt="QR Code GarageHub">' if qr_src else '<div class="qr-box"></div>'
-
-    st.markdown(f'''
-    <style>
-    .garagepass-wrap {{ background: radial-gradient(circle at top left, rgba(250,204,21,.28), transparent 35%), radial-gradient(circle at bottom right, rgba(56,189,248,.16), transparent 35%), linear-gradient(145deg, rgba(15,23,42,.98), rgba(2,6,23,.99)); border: 2px solid rgba(250,204,21,.58); border-radius: 34px; padding: 28px; box-shadow: 0 28px 80px rgba(0,0,0,.48), 0 0 54px rgba(250,204,21,.13); margin: 18px 0; overflow: hidden; position: relative; }}
-    .garagepass-wrap:before {{ content:""; position:absolute; inset:-45%; background: conic-gradient(from 180deg, transparent, rgba(250,204,21,.12), transparent, rgba(56,189,248,.08), transparent); animation: ghpassspin 9s linear infinite; pointer-events:none; }}
-    .garagepass-inner {{ position:relative; z-index:2; display:grid; grid-template-columns: 1.25fr .75fr; gap:24px; align-items:center; }}
-    .garagepass-kicker {{display:inline-flex; padding:8px 13px; border-radius:999px; background:rgba(250,204,21,.15); border:1px solid rgba(250,204,21,.38); color:#fde68a; font-size:12px; font-weight:950; text-transform:uppercase; letter-spacing:.7px; margin-bottom:12px;}}
-    .garagepass-name {{font-size:40px; font-weight:950; color:#facc15; line-height:1.05; margin:0 0 8px;}}
-    .garagepass-title {{font-size:18px; color:#e5e7eb; font-weight:900; margin:0 0 14px;}}
-    .garagepass-code {{display:inline-flex; padding:12px 18px; border-radius:16px; background:linear-gradient(135deg,#facc15,#f97316); color:#111827; font-weight:950; letter-spacing:1px; margin:8px 0 12px;}}
-    .garagepass-grid {{display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:10px; margin-top:16px;}}
-    .garagepass-stat {{background:rgba(2,6,23,.52); border:1px solid rgba(148,163,184,.18); border-radius:18px; padding:13px;}}
-    .garagepass-stat small {{display:block; color:#94a3b8; font-weight:900; font-size:11px; text-transform:uppercase;}}
-    .garagepass-stat strong {{display:block; color:#f8fafc; font-size:20px; font-weight:950; margin-top:4px;}}
-    .garagepass-qrbox {{background:#f8fafc; border-radius:24px; padding:16px; text-align:center; box-shadow:0 0 34px rgba(250,204,21,.25);}}
-    .garagepass-qr-img {{width:230px; height:230px; object-fit:contain; display:block; margin:0 auto;}}
-    .garagepass-link {{color:#0f172a!important; font-size:12px; font-weight:900; word-break:break-word; margin-top:8px;}}
-    .garagepass-chip {{display:inline-flex; margin:5px 5px 0 0; padding:7px 11px; border-radius:999px; background:rgba(250,204,21,.14); border:1px solid rgba(250,204,21,.30); color:#fde68a; font-size:12px; font-weight:950;}}
-    @keyframes ghpassspin {{ from {{transform:rotate(0)}} to {{transform:rotate(360deg)}} }}
-    @media(max-width:860px) {{ .garagepass-inner {{grid-template-columns:1fr;}} .garagepass-grid {{grid-template-columns:repeat(2,1fr);}} .garagepass-name {{font-size:30px;}} .garagepass-qr-img {{width:200px;height:200px;}} }}
-    </style>
-    <div class="garagepass-wrap"><div class="garagepass-inner"><div>
-        <div class="garagepass-kicker">🎫 GaragePass Digital</div>
-        <div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap;">{avatar}<div>
-            <h2 class="garagepass-name">{html.escape(nome)}</h2>
-            <p class="garagepass-title">{html.escape(titulo)} • {html.escape(nivel)}</p>
-            <div class="garagepass-code">{html.escape(codigo)}</div>
-        </div></div>
-        <div class="garagepass-grid">
-            <div class="garagepass-stat"><small>XP</small><strong>{pontos}</strong></div>
-            <div class="garagepass-stat"><small>Ranking</small><strong>#{html.escape(str(posicao))}</strong></div>
-            <div class="garagepass-stat"><small>Garagem</small><strong>{total_minis}</strong></div>
-            <div class="garagepass-stat"><small>Raras</small><strong>{raras}</strong></div>
-            <div class="garagepass-stat"><small>Cotas</small><strong>{cotas}</strong></div>
-            <div class="garagepass-stat"><small>Vitórias</small><strong>{vitorias}</strong></div>
-            <div class="garagepass-stat"><small>Próximo</small><strong>{html.escape(str(item.get('proximo_nivel') or '-'))}</strong></div>
-            <div class="garagepass-stat"><small>Progresso</small><strong>{progresso}%</strong></div>
-        </div>
-        <div style="margin-top:16px;">{conquistas_html}</div>
-    </div><div class="garagepass-qrbox">{qr_html}<div class="garagepass-link">{html.escape(payload_qr)}</div></div></div></div>
-    ''', unsafe_allow_html=True)
-    st.progress(progresso, text=f"{progresso}% para {item.get('proximo_nivel', 'próximo nível')} — {item.get('faltam', 0)} ponto(s) restantes")
-    st.code(payload_qr, language="text")
-    st.caption("Este QR abre a URL pública do GarageHub com o ID da carteirinha. Para trocar a URL, configure APP_PUBLIC_URL nos Secrets do Streamlit.")
 
 
 # =========================
@@ -5912,7 +5637,7 @@ else:
                             e_ano = st.text_input("Ano", value=mini_edit.get("ano") or "", key=f"adm_e_ano_{mini_edit['id']}")
                             e_foto = st.file_uploader("Trocar foto", type=["jpg", "jpeg", "png"], key=f"adm_e_foto_{mini_edit['id']}")
                         with e2:
-                            opcoes_r = ["Não identificado", "Comum", "TH", "STH", "Premium", "RLC", "Chase", "Especial"]
+                            opcoes_r = ["Comum", "TH", "STH", "Premium", "RLC", "Chase", "Especial"]
                             idx_r = opcoes_r.index(mini_edit.get("raridade")) if mini_edit.get("raridade") in opcoes_r else 0
                             e_raridade = st.selectbox("Raridade", opcoes_r, index=idx_r, key=f"adm_e_raridade_{mini_edit['id']}")
                             e_valor_pago = st.number_input("Valor pago", min_value=0.0, step=1.0, value=float(mini_edit.get("valor_pago") or 0), key=f"adm_e_valor_pago_{mini_edit['id']}")
@@ -6139,10 +5864,6 @@ else:
             </div>
             """, unsafe_allow_html=True)
             render_scanner_ia_demo()
-            try:
-                render_admin_validacoes_scanner({str(c.get("id")): c for c in clientes})
-            except Exception:
-                pass
             st.warning("Integrações reais precisam das chaves/API do provedor escolhido. O scanner acima já funciona em modo assistido/local e está pronto para conectar IA depois.")
 
         # =========================
@@ -6504,7 +6225,17 @@ else:
             render_gamificacao_cliente(usuario)
 
         with aba_carteirinha_qr:
-            render_carteirinha_qr_premium(usuario)
+            nivel = usuario.get("nivel_cliente") or "comum"
+            st.markdown(f"""
+            <div class="qr-card">
+                <h2>🎫 Carteirinha Digital GarageHub</h2>
+                <p><strong>{html.escape(str(usuario.get('nome') or 'Cliente'))}</strong></p>
+                <div class="qr-box"></div>
+                <p>Código: <strong>{html.escape(str(usuario.get('codigo_membro') or '-'))}</strong></p>
+                <p>Nível: <strong>{'MEMBRO VIP' if nivel == 'vip' else 'CLIENTE COMUM'}</strong></p>
+                <p>Use este QR visual como base da carteirinha. A próxima etapa pode gerar QR real com link público do perfil.</p>
+            </div>
+            """, unsafe_allow_html=True)
 
         with aba_lab_cliente:
             st.markdown("""

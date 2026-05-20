@@ -5,9 +5,12 @@ import html
 import mimetypes
 import re
 import hashlib
+import os
 import random
+import urllib.parse
 from pathlib import Path
 from datetime import datetime
+from urllib.parse import quote
 
 import streamlit as st
 from supabase import create_client
@@ -214,6 +217,160 @@ def pix_card_html(pedido, titulo="Pagamento Pix"):
         <p class="pix-help">Copie o código, pague pelo app do banco e avise o admin. O admin confirma e lança a mini na garagem.</p>
     </div>
     """
+
+
+
+def whatsapp_pagamento_numero():
+    """Número do WhatsApp do admin/lojista para cobrança manual via maquininha.
+
+    Leitura blindada: tenta várias chaves em st.secrets e também variáveis de ambiente.
+    Isso evita o caso em que o Streamlit carregou o secret, mas a função não enxerga
+    por diferença de nome/maiúsculas/minúsculas ou formato.
+    """
+    chaves = [
+        "PAGAMENTO_WHATSAPP",
+        "WHATSAPP_PAGAMENTO",
+        "WHATSAPP_ADMIN",
+        "pagamento_whatsapp",
+        "whatsapp_pagamento",
+        "whatsapp_admin",
+    ]
+
+    numero = ""
+
+    # 1) Streamlit secrets
+    try:
+        for chave in chaves:
+            try:
+                valor = st.secrets.get(chave, "")
+            except Exception:
+                valor = ""
+
+            if valor:
+                numero = valor
+                break
+
+        # Alguns ambientes permitem st.secrets como dict simples.
+        if not numero:
+            try:
+                secrets_dict = dict(st.secrets)
+                for chave in chaves:
+                    if secrets_dict.get(chave):
+                        numero = secrets_dict.get(chave)
+                        break
+            except Exception:
+                pass
+    except Exception:
+        numero = ""
+
+    # 2) Variáveis de ambiente, caso o deploy injete por ENV.
+    if not numero:
+        for chave in chaves:
+            valor = os.environ.get(chave, "")
+            if valor:
+                numero = valor
+                break
+
+    # Limpa tudo que não for número: aceita +55, parênteses, espaços e traços.
+    numero = re.sub(r"\D", "", str(numero or ""))
+
+    # Proteção: número brasileiro deve vir com DDI 55. Se o usuário salvou só DDD+telefone, adiciona 55.
+    if numero and not numero.startswith("55") and len(numero) in [10, 11]:
+        numero = "55" + numero
+
+    return numero
+
+
+def gerar_link_whatsapp_pagamento(usuario, origem, referencia, valor=0, detalhes=""):
+    """Monta link WhatsApp com mensagem pronta para solicitar pagamento ao admin."""
+    numero = whatsapp_pagamento_numero()
+    if not numero:
+        return ""
+
+    nome = str((usuario or {}).get("nome") or "Cliente")
+    codigo = str((usuario or {}).get("codigo_membro") or "-")
+    partes = [
+        "Olá! Quero finalizar o pagamento pelo GarageHub.",
+        "",
+        f"Cliente: {nome}",
+        f"Carteirinha: {codigo}",
+        f"Origem: {origem}",
+        f"Referência: {referencia}",
+        f"Valor: {money(valor)}",
+    ]
+    if detalhes:
+        partes.append(f"Detalhes: {detalhes}")
+    partes.extend(["", "Pode me enviar a cobrança/link/Pix para pagamento?"])
+    mensagem = chr(10).join(partes)
+
+    texto_url = urllib.parse.quote(mensagem)
+    return f"https://wa.me/{numero}?text={texto_url}"
+
+
+def render_solicitar_pagamento_whatsapp(usuario, origem, referencia, valor=0, detalhes="", chave="pagamento"):
+    """Card simples e claro para solicitar pagamento via WhatsApp/maquininha."""
+    link = gerar_link_whatsapp_pagamento(usuario, origem, referencia, valor, detalhes)
+
+    st.markdown(f"""
+    <div class="checkout-box" style="border-color:rgba(34,197,94,.35);">
+        <h3>💬 Solicitar pagamento</h3>
+        <p>
+            Clique no botão verde para falar com o admin no WhatsApp. Ele vai gerar a cobrança por Pix,
+            cartão ou débito na maquininha e depois confirma o pagamento no GarageHub.
+        </p>
+        <p style="margin-top:10px;color:#86efac;font-weight:950;">
+            Valor desta solicitação: {money(valor)}
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if not link:
+        st.info("WhatsApp de pagamento ainda não configurado neste ambiente.")
+        numero_teste = st.text_input(
+            "Número WhatsApp do admin para testar agora",
+            placeholder="Ex: 5511999999999",
+            key=f"whatsapp_pagamento_teste_{chave}"
+        )
+        numero_teste_limpo = re.sub(r"\D", "", str(numero_teste or ""))
+        if numero_teste_limpo:
+            nome = str((usuario or {}).get("nome") or "Cliente")
+            codigo = str((usuario or {}).get("codigo_membro") or "-")
+            mensagem = "\n".join([
+                "Olá! Quero finalizar o pagamento pelo GarageHub.",
+                "",
+                f"Cliente: {nome}",
+                f"Carteirinha: {codigo}",
+                f"Origem: {origem}",
+                f"Referência: {referencia}",
+                f"Valor: {money(valor)}",
+                f"Detalhes: {detalhes}" if detalhes else "",
+                "",
+                "Pode me enviar a cobrança/link/Pix para pagamento?"
+            ]).replace("\n\n\n", "\n\n")
+            link = f"https://wa.me/{numero_teste_limpo}?text={urllib.parse.quote(mensagem)}"
+        else:
+            st.caption("Em produção, configure nos Secrets: PAGAMENTO_WHATSAPP = \"55DDDNUMERO\".")
+            return
+
+    link_safe = html.escape(link, quote=True)
+
+    # Link real em HTML para abrir WhatsApp em nova aba/app.
+    # Evita confusão com botão nativo do Streamlit e funciona melhor no celular.
+    st.markdown(f"""
+    <a href="{link_safe}" target="_blank" rel="noopener noreferrer"
+       style="display:block;text-align:center;background:linear-gradient(135deg,#22c55e,#16a34a);
+              color:white;text-decoration:none;font-weight:950;border-radius:18px;
+              padding:18px 22px;margin:12px 0 10px;box-shadow:0 14px 34px rgba(34,197,94,.22);
+              font-size:17px;">
+        🟢 Abrir WhatsApp agora
+    </a>
+    """, unsafe_allow_html=True)
+
+    with st.expander("🔗 Se o WhatsApp não abrir, copie o link aqui", expanded=False):
+        st.code(link)
+
+    st.caption("Depois de falar com o admin no WhatsApp, use o botão abaixo apenas para registrar no GarageHub que a cobrança foi solicitada.")
+
 
 def slugify(texto):
     texto = str(texto or "arquivo").lower().strip()
@@ -651,6 +808,48 @@ def atualizar_pedido(pedido_id, dados):
 def excluir_pedido(pedido_id):
     supabase.table("pedidos").delete().eq("id", pedido_id).execute()
 
+
+def excluir_pedido_e_liberar_loja(pedido):
+    """Exclui um pedido e, se ele veio da loja, libera o item novamente quando não estiver concluído."""
+    if not pedido:
+        return False, "Pedido inválido."
+
+    status = str(pedido.get("status") or "").lower()
+
+    try:
+        if pedido.get("loja_mini_id") and status != "concluido":
+            try:
+                atualizar_loja_mini(pedido.get("loja_mini_id"), {"status": "disponivel"})
+            except Exception:
+                pass
+
+        excluir_pedido(pedido.get("id"))
+        return True, "Pedido excluído e item liberado quando aplicável."
+    except Exception as e:
+        return False, f"Erro ao excluir pedido: {e}"
+
+
+def limpar_pedidos_admin(pedidos, status_permitidos):
+    """Limpa vários pedidos por status e libera itens da loja quando aplicável."""
+    total = 0
+    erros = []
+    status_permitidos = [str(s).lower() for s in (status_permitidos or [])]
+
+    for pedido in pedidos or []:
+        status = str(pedido.get("status") or "").lower()
+        if status not in status_permitidos:
+            continue
+
+        ok, msg = excluir_pedido_e_liberar_loja(pedido)
+        if ok:
+            total += 1
+        else:
+            erros.append(msg)
+
+    if erros:
+        return False, f"{total} pedido(s) limpo(s), mas houve erro(s): " + " | ".join(erros[:3])
+
+    return True, f"{total} pedido(s) limpo(s) com sucesso."
 
 
 def concluir_pedido_na_garagem(pedido, loja_item=None):
@@ -4712,6 +4911,20 @@ def render_rifas_cliente(usuario):
             if str(n.get("usuario_id")) == str(usuario.get("id"))
         ]
 
+        # Totais do cliente nesta rifa — usados no resumo e no botão de pagamento WhatsApp.
+        minhas_pagas = len([
+            n for n in meus_numeros
+            if str(n.get("status_pagamento") or "").lower() == "pago"
+        ])
+        minhas_reservadas = len([
+            n for n in meus_numeros
+            if str(n.get("status_pagamento") or "").lower() == "reservado"
+        ])
+        minhas_pendentes = len([
+            n for n in meus_numeros
+            if str(n.get("status_pagamento") or "").lower() in ["pendente", "aguardando_pix"]
+        ])
+
         foto = get_foto_item({"foto_url": rifa.get("premio_foto_url")})
         img = imagem_html(foto, "market-img") if foto else '<div class="market-empty">🎟️</div>'
         status = html.escape(str(rifa.get("status") or "aberta"))
@@ -4745,6 +4958,17 @@ def render_rifas_cliente(usuario):
         if meus_numeros:
             lista_meus = ", ".join(str(n.get("numero")).zfill(max(2, len(str(qtd_total)))) for n in meus_numeros)
             st.success(f"Seus números nesta rifa: {lista_meus}")
+
+            if minhas_pendentes > 0 or minhas_reservadas > 0:
+                valor_a_pagar_rifa = (minhas_pendentes + minhas_reservadas) * float(rifa.get("valor_numero") or 0)
+                render_solicitar_pagamento_whatsapp(
+                    usuario,
+                    "Rifa GarageHub",
+                    f"Rifa {rifa.get('titulo') or rifa.get('id')}",
+                    valor_a_pagar_rifa,
+                    f"Números: {lista_meus}",
+                    chave=f"rifa_{rifa_id}"
+                )
         else:
             st.info("Você ainda não possui números nesta rifa. Peça para o admin reservar ou lançar seus números.")
 
@@ -5374,6 +5598,55 @@ else:
 
             st.subheader("Pedidos recebidos pela Loja")
 
+            if pedidos:
+                st.markdown("""
+                <div class="checkout-box">
+                    <h3>🧹 Limpeza de pedidos</h3>
+                    <p>Use com cuidado. Pedidos cancelados podem ser removidos para limpar o painel. Pedidos concluídos também podem ser arquivados/removidos da lista sem mexer nas minis já lançadas.</p>
+                </div>
+                """, unsafe_allow_html=True)
+
+                col_limpa_1, col_limpa_2, col_limpa_3 = st.columns(3)
+
+                with col_limpa_1:
+                    confirmar_limpar_cancelados = st.checkbox("Confirmar limpar cancelados", key="admin_confirmar_limpar_cancelados")
+                    if st.button("🧹 Limpar cancelados", key="admin_limpar_pedidos_cancelados", use_container_width=True):
+                        if not confirmar_limpar_cancelados:
+                            st.warning("Marque a confirmação antes de limpar os cancelados.")
+                        else:
+                            ok, msg = limpar_pedidos_admin(pedidos, ["cancelado"])
+                            if ok:
+                                st.success(msg)
+                                st.rerun()
+                            else:
+                                st.error(msg)
+
+                with col_limpa_2:
+                    confirmar_limpar_concluidos = st.checkbox("Confirmar arquivar concluídos", key="admin_confirmar_limpar_concluidos")
+                    if st.button("📦 Arquivar concluídos", key="admin_limpar_pedidos_concluidos", use_container_width=True):
+                        if not confirmar_limpar_concluidos:
+                            st.warning("Marque a confirmação antes de arquivar os concluídos.")
+                        else:
+                            ok, msg = limpar_pedidos_admin(pedidos, ["concluido"])
+                            if ok:
+                                st.success(msg)
+                                st.rerun()
+                            else:
+                                st.error(msg)
+
+                with col_limpa_3:
+                    confirmar_limpar_abertos = st.checkbox("Confirmar limpar abertos", key="admin_confirmar_limpar_abertos")
+                    if st.button("⚠️ Limpar abertos", key="admin_limpar_pedidos_abertos", use_container_width=True):
+                        if not confirmar_limpar_abertos:
+                            st.warning("Marque a confirmação antes de limpar pedidos em aberto.")
+                        else:
+                            ok, msg = limpar_pedidos_admin(pedidos, ["solicitado", "pendente", "reservado", "aguardando_pix"])
+                            if ok:
+                                st.success(msg)
+                                st.rerun()
+                            else:
+                                st.error(msg)
+
             if not pedidos:
                 st.info("Ainda não há pedidos/reservas feitos pelos clientes.")
             else:
@@ -5405,7 +5678,7 @@ else:
                     if status_ped == "aguardando_pix":
                         st.markdown(pix_card_html(ped, "Pix aguardando confirmação"), unsafe_allow_html=True)
 
-                    b1, b2, b3, b4, b5, b6 = st.columns([1, 1, 1, 1.4, 1.7, 2.2])
+                    b1, b2, b3, b4, b5, b6, b7 = st.columns([1, 1, 1, 1.4, 1.7, 2.0, 1.4])
                     with b1:
                         if st.button("🟡 Pendente", key=f"ped_pendente_{ped['id']}", disabled=status_ped == "concluido"):
                             atualizar_pedido(ped["id"], {"status": "pendente"})
@@ -5444,7 +5717,20 @@ else:
                         if status_ped == "concluido":
                             st.success("Pedido concluído e mini já lançada.")
                         else:
-                            st.caption("Pix assistido: cliente paga, admin confirma e lança na garagem.")
+                            st.caption("Pagamento assistido: cliente solicita, admin gera cobrança e confirma no GarageHub.")
+
+                    with b7:
+                        confirmar_excluir_pedido = st.checkbox("Confirmar", key=f"ped_confirmar_excluir_{ped['id']}")
+                        if st.button("🗑️ Excluir", key=f"ped_excluir_admin_{ped['id']}", use_container_width=True):
+                            if not confirmar_excluir_pedido:
+                                st.warning("Marque Confirmar antes de excluir este pedido.")
+                            else:
+                                ok, msg = excluir_pedido_e_liberar_loja(ped)
+                                if ok:
+                                    st.success(msg)
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
 
             st.divider()
             st.subheader("Lançamento manual direto")
@@ -6034,28 +6320,43 @@ else:
                     </div>
                     """, unsafe_allow_html=True)
 
-                    if status_ped in ["solicitado", "pendente", "aguardando_pix"]:
-                        if status_ped == "aguardando_pix":
-                            st.markdown(pix_card_html(ped, "Seu Pix para pagamento"), unsafe_allow_html=True)
+                    if status_ped in ["solicitado", "pendente", "aguardando_pix", "reservado"]:
+                        render_solicitar_pagamento_whatsapp(
+                            usuario,
+                            "Pedido da loja",
+                            f"Pedido #{ped.get('id')}",
+                            float(ped.get("valor") or 0),
+                            f"{ped.get('nome') or 'Mini'} - {ped.get('marca') or ''} {ped.get('serie') or ''}",
+                            chave=f"pedido_{ped.get('id')}"
+                        )
+
+                        st.caption("Primeiro abra o WhatsApp no botão verde. Depois registre aqui que a cobrança foi solicitada.")
                         c_pix, c_cancel = st.columns([1.4, 1])
                         with c_pix:
-                            if st.button("💳 Gerar / ver Pix", key=f"cli_gerar_pix_{ped['id']}"):
+                            if st.button("✅ Já pedi a cobrança no WhatsApp", key=f"cli_gerar_pix_{ped['id']}", use_container_width=True):
                                 try:
-                                    atualizar_pedido(ped["id"], {"status": "aguardando_pix", "observacoes": f"Pix gerado pelo cliente. {gerar_pix_copia_cola(ped)}"})
-                                    st.success("Pix gerado. Após pagar, avise o admin para confirmar e lançar na garagem.")
-                                    st.rerun()
-                                except Exception:
-                                    st.error("Não foi possível gerar o Pix agora.")
+                                    atualizar_pedido(ped["id"], {
+                                        "status": "aguardando_pix",
+                                        "observacoes": "Cliente solicitou pagamento via WhatsApp/maquininha pelo GarageHub."
+                                    })
+                                    st.session_state[f"pagamento_solicitado_{ped['id']}"] = True
+                                    st.success("Solicitação registrada no GarageHub. O admin vai confirmar o pagamento depois que receber a cobrança/pagamento.")
+                                except Exception as e:
+                                    st.error(f"Não foi possível registrar a solicitação agora: {e}")
                         with c_cancel:
-                            if st.button("Cancelar solicitação", key=f"cli_cancelar_pedido_{ped['id']}"):
+                            if st.button("Cancelar solicitação", key=f"cli_cancelar_pedido_{ped['id']}", use_container_width=True):
                                 try:
-                                    atualizar_pedido(ped["id"], {"status": "cancelado"})
                                     if ped.get("loja_mini_id"):
                                         atualizar_loja_mini(ped.get("loja_mini_id"), {"status": "disponivel"})
-                                    st.success("Pedido cancelado.")
+
+                                    # Para o cliente, cancelar reserva remove o pedido aberto.
+                                    # Assim ele some de Meus pedidos e os totais diminuem de verdade.
+                                    excluir_pedido(ped["id"])
+
+                                    st.success("Reserva cancelada e item liberado na loja.")
                                     st.rerun()
-                                except Exception:
-                                    st.error("Não foi possível cancelar o pedido.")
+                                except Exception as e:
+                                    st.error(f"Não foi possível cancelar o pedido: {e}")
 
 
         with aba_hall_cliente:
@@ -6177,8 +6478,27 @@ else:
                 pedidos_pag = buscar_pedidos(usuario["id"])
             except Exception:
                 pedidos_pag = []
-            render_checkout_real_visual(pedidos_pag)
-            st.markdown('<div class="checkout-box"><h3>📎 Comprovante</h3><p>Estrutura pronta para próxima versão: upload de comprovante e validação pelo admin.</p></div>', unsafe_allow_html=True)
+
+            st.markdown('<div class="pro-hero"><h2>💳 Pagamentos</h2><p>Solicite a cobrança pelo WhatsApp. O admin gera o link/Pix/cartão na maquininha e confirma no GarageHub.</p></div>', unsafe_allow_html=True)
+            pedidos_abertos_pag = [p for p in pedidos_pag if (p.get("status") or "solicitado") in ["solicitado", "pendente", "reservado", "aguardando_pix", "pago"]]
+
+            if not pedidos_abertos_pag:
+                st.info("Você não possui pagamentos em aberto no momento.")
+            else:
+                for p in pedidos_abertos_pag:
+                    st.markdown(f"### #{p.get('id')} — {p.get('nome') or 'Pedido'}")
+                    st.write(f"Status: **{status_label(p.get('status'))}** • Valor: **{money(p.get('valor') or 0)}**")
+                    render_solicitar_pagamento_whatsapp(
+                        usuario,
+                        "Pedido da loja",
+                        f"Pedido #{p.get('id')}",
+                        float(p.get("valor") or 0),
+                        f"{p.get('nome') or 'Mini'} - {p.get('marca') or ''} {p.get('serie') or ''}",
+                        chave=f"pagamento_{p.get('id')}"
+                    )
+                    st.divider()
+
+            st.markdown('<div class="checkout-box"><h3>📎 Comprovante</h3><p>Após pagar, envie o comprovante pelo WhatsApp. O admin confirma e lança a mini/cota como paga.</p></div>', unsafe_allow_html=True)
 
         # =========================
         # ABA PERFIL CLIENTE

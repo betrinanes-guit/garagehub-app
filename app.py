@@ -992,6 +992,117 @@ def criar_cliente_admin(nome, email, senha, telefone, cidade, estado, instagram,
 
 
 
+
+# =========================
+# ADMIN — ADICIONAR MINI PARA CLIENTE
+# =========================
+def render_admin_adicionar_mini_cliente(clientes, contexto="admin_clientes"):
+    """Permite ao admin lançar uma mini diretamente na garagem oficial de um cliente."""
+    clientes = [c for c in (clientes or []) if str(c.get("tipo") or "usuario") != "admin"]
+
+    st.markdown("""
+    <div class="admin-work-card">
+        <h3>➕ Adicionar mini para cliente</h3>
+        <p>Escolha o cliente, preencha os dados da mini e lance direto na garagem oficial dele.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if not clientes:
+        st.warning("Nenhum cliente comum encontrado para receber minis.")
+        return
+
+    clientes_ordenados = sorted(clientes, key=lambda c: str(c.get("nome") or "").lower())
+    mapa_clientes = {
+        f"{c.get('nome') or 'Sem nome'} — {c.get('email') or 'sem email'}": c
+        for c in clientes_ordenados
+    }
+
+    with st.expander("🚗 Abrir lançamento manual de mini", expanded=False):
+        cliente_label = st.selectbox(
+            "Cliente destino",
+            list(mapa_clientes.keys()),
+            key=f"{contexto}_add_mini_cliente_destino"
+        )
+        cliente_sel = mapa_clientes[cliente_label]
+
+        st.caption(f"A mini será vinculada ao usuário_id: {cliente_sel.get('id')}")
+
+        with st.form(f"{contexto}_form_add_mini_cliente", clear_on_submit=False):
+            col1, col2 = st.columns(2)
+
+            with col1:
+                nome = st.text_input("Nome da mini", placeholder="Ex: Nissan Skyline GT-R R34")
+                marca = st.selectbox(
+                    "Marca",
+                    [
+                        "Hot Wheels", "MiniGT", "Kaido House", "Matchbox", "Tomica",
+                        "M2 Machines", "GreenLight", "Tarmac Works", "Inno64",
+                        "Johnny Lightning", "Outro"
+                    ]
+                )
+                serie = st.text_input("Série / Linha", placeholder="Ex: Premium, RLC, Boulevard...")
+                ano = st.text_input("Ano", placeholder="Ex: 2026")
+                foto = st.file_uploader("Foto da mini", type=["jpg", "jpeg", "png"])
+
+            with col2:
+                raridade = st.selectbox(
+                    "Raridade",
+                    ["Comum", "TH", "STH", "Premium", "RLC", "Chase", "Especial", "Limitado", "Não identificado"]
+                )
+                status_pagamento = st.selectbox(
+                    "Status pagamento",
+                    ["pago", "pendente", "reservado", "cancelado"],
+                    index=0
+                )
+                tipo_mini = st.selectbox(
+                    "Tipo da mini",
+                    ["compra", "presente", "troca", "scanner", "colecao", "admin"]
+                )
+                valor_pago = st.number_input("Valor pago", min_value=0.0, step=1.0, format="%.2f")
+                valor_estimado = st.number_input("Valor estimado", min_value=0.0, step=1.0, format="%.2f")
+
+            destaque_cliente = st.text_area(
+                "Observações / destaque",
+                placeholder="Ex: lançado manualmente pelo admin, blister perfeito, compra na loja..."
+            )
+
+            salvar = st.form_submit_button("💾 Adicionar mini na garagem do cliente", use_container_width=True)
+
+        if salvar:
+            if not str(nome or "").strip():
+                st.error("Informe o nome da mini.")
+                return
+
+            try:
+                foto_url = ""
+                if foto is not None:
+                    foto_url = upload_storage(
+                        foto,
+                        "minis",
+                        f"admin_cliente_{cliente_sel.get('id')}_{nome}"
+                    )
+
+                cadastrar_mini(
+                    cliente_sel.get("id"),
+                    str(nome).strip(),
+                    marca,
+                    str(serie or "").strip(),
+                    str(ano or "").strip(),
+                    raridade,
+                    float(valor_pago or 0),
+                    float(valor_estimado or 0),
+                    foto_url,
+                    status_pagamento,
+                    tipo_mini,
+                    str(destaque_cliente or "").strip()
+                )
+
+                st.success(f"Mini adicionada com sucesso na garagem de {cliente_sel.get('nome') or 'cliente'}.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Erro ao adicionar mini para o cliente: {e}")
+
+
 # =========================
 # ADMIN — GARAGEM DO CLIENTE
 # =========================
@@ -1006,6 +1117,8 @@ def render_admin_garagem_cliente(usuario_cliente):
     if st.button("⬅️ Voltar para usuários", use_container_width=True, key="voltar_admin_usuarios"):
         st.session_state.pop("admin_cliente_garagem_id", None)
         st.rerun()
+
+    render_admin_adicionar_mini_cliente([usuario_cliente], contexto=f"garagem_cliente_{usuario_cliente.get('id')}")
 
     minis_cliente = buscar_minis(usuario_cliente.get("id"))
 
@@ -5286,6 +5399,8 @@ else:
                         st.rerun()
                     else:
                         st.error(msg)
+
+            render_admin_adicionar_mini_cliente(clientes, contexto="aba_clientes")
 
             if st.session_state.get("admin_cliente_garagem_id"):
                 cliente_aberto = next(

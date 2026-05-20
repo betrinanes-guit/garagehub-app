@@ -692,6 +692,162 @@ def listar_usuarios():
     return supabase.table("usuarios").select("*").order("criado_em", desc=True).execute().data
 
 
+# =========================
+# ADMIN — NOVOS CADASTROS
+# =========================
+def parse_data_supabase(valor):
+    """Converte datas do Supabase para datetime sem travar o app."""
+    if not valor:
+        return None
+
+    texto = str(valor).strip()
+    try:
+        texto = texto.replace("Z", "+00:00")
+        if "." in texto and "+" not in texto:
+            # mantém compatibilidade com strings com microssegundos sem timezone
+            return datetime.fromisoformat(texto)
+        return datetime.fromisoformat(texto)
+    except Exception:
+        try:
+            return datetime.strptime(texto[:19], "%Y-%m-%dT%H:%M:%S")
+        except Exception:
+            return None
+
+
+def dias_desde_criacao(usuario):
+    dt = parse_data_supabase(usuario.get("criado_em"))
+    if not dt:
+        return 999999
+
+    try:
+        if getattr(dt, "tzinfo", None) is not None:
+            dt = dt.replace(tzinfo=None)
+    except Exception:
+        pass
+
+    return max((datetime.now() - dt).days, 0)
+
+
+def formatar_data_cadastro(valor):
+    dt = parse_data_supabase(valor)
+    if not dt:
+        return "-"
+    try:
+        return dt.strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return str(valor or "-")
+
+
+def is_cliente_novo(usuario, dias=7):
+    return str(usuario.get("tipo") or "usuario") != "admin" and dias_desde_criacao(usuario) <= dias
+
+
+def render_admin_novos_cadastros(clientes):
+    """Painel rápido para o admin acompanhar clientes que acabaram de criar conta."""
+    clientes = [c for c in (clientes or []) if str(c.get("tipo") or "usuario") != "admin"]
+    novos_hoje = [c for c in clientes if dias_desde_criacao(c) == 0]
+    novos_7 = [c for c in clientes if dias_desde_criacao(c) <= 7]
+    novos_30 = [c for c in clientes if dias_desde_criacao(c) <= 30]
+
+    st.markdown("""
+    <div class="admin-work-card">
+        <h3>🆕 Novos clientes cadastrados</h3>
+        <p>Visão rápida para o admin acompanhar quem acabou de entrar na comunidade GarageHub.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    n1, n2, n3 = st.columns(3)
+    with n1:
+        st.markdown(f'<div class="metric-card"><div class="metric-icon">🆕</div><h2>{len(novos_hoje)}</h2><p>Novos hoje</p></div>', unsafe_allow_html=True)
+    with n2:
+        st.markdown(f'<div class="metric-card"><div class="metric-icon">📅</div><h2>{len(novos_7)}</h2><p>Últimos 7 dias</p></div>', unsafe_allow_html=True)
+    with n3:
+        st.markdown(f'<div class="metric-card"><div class="metric-icon">👥</div><h2>{len(novos_30)}</h2><p>Últimos 30 dias</p></div>', unsafe_allow_html=True)
+
+    if not novos_7:
+        st.info("Nenhum cliente novo nos últimos 7 dias.")
+        return
+
+    with st.expander("👀 Ver novos cadastros dos últimos 7 dias", expanded=True):
+        for c in novos_7[:12]:
+            status = str(c.get("status") or "ativo")
+            nivel = str(c.get("nivel_cliente") or "comum")
+            dias = dias_desde_criacao(c)
+            selo = "Hoje" if dias == 0 else f"há {dias} dia(s)"
+            nome = html.escape(str(c.get("nome") or "Cliente"))
+            email = html.escape(str(c.get("email") or "-"))
+            telefone = html.escape(str(c.get("telefone") or "-"))
+            cidade = html.escape(str(c.get("cidade") or "-"))
+            estado = html.escape(str(c.get("estado") or "-"))
+            criado = html.escape(formatar_data_cadastro(c.get("criado_em")))
+            codigo = html.escape(str(c.get("codigo_membro") or "-"))
+
+            st.markdown(f"""
+            <div class="user-card">
+                <div class="user-head">
+                    <div>
+                        <div class="user-name">🆕 {nome}</div>
+                        <div class="user-email">{email}</div>
+                    </div>
+                    <div>
+                        <span class="status-pill status-ativo">{html.escape(selo)}</span>
+                        <span class="type-pill {'badge-vip' if nivel == 'vip' else 'badge-comum'}">{html.escape(nivel.upper())}</span>
+                        <span class="type-pill {'status-ativo' if status == 'ativo' else 'status-bloqueado'}">{html.escape(status.upper())}</span>
+                    </div>
+                </div>
+                <div class="user-info-grid">
+                    <div class="user-info-item"><small>Cadastro</small><strong>{criado}</strong></div>
+                    <div class="user-info-item"><small>Telefone / WhatsApp</small><strong>{telefone}</strong></div>
+                    <div class="user-info-item"><small>Cidade / Estado</small><strong>{cidade} / {estado}</strong></div>
+                    <div class="user-info-item"><small>Carteirinha</small><strong>{codigo}</strong></div>
+                    <div class="user-info-item"><small>Status</small><strong>{html.escape(status.upper())}</strong></div>
+                    <div class="user-info-item"><small>Nível</small><strong>{html.escape(nivel.upper())}</strong></div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            ac1, ac2, ac3, ac4 = st.columns(4)
+            with ac1:
+                if st.button("🚗 Ver garagem", key=f"novo_ver_garagem_{c['id']}", use_container_width=True):
+                    st.session_state["admin_cliente_garagem_id"] = c["id"]
+                    st.rerun()
+            with ac2:
+                if nivel == "vip":
+                    if st.button("⬇️ Remover VIP", key=f"novo_remover_vip_{c['id']}", use_container_width=True):
+                        atualizar_nivel_cliente(c["id"], "comum")
+                        st.rerun()
+                else:
+                    if st.button("👑 Tornar VIP", key=f"novo_tornar_vip_{c['id']}", use_container_width=True):
+                        atualizar_nivel_cliente(c["id"], "vip")
+                        st.rerun()
+            with ac3:
+                if status == "bloqueado":
+                    if st.button("✅ Liberar", key=f"novo_liberar_{c['id']}", use_container_width=True):
+                        atualizar_status(c["id"], "ativo")
+                        st.rerun()
+                else:
+                    if st.button("🔒 Bloquear", key=f"novo_bloquear_{c['id']}", use_container_width=True):
+                        atualizar_status(c["id"], "bloqueado")
+                        st.rerun()
+            with ac4:
+                with st.popover("🗑️ Excluir"):
+                    st.warning("Exclui o cliente e dados vinculados. Use com cuidado.")
+                    confirma = st.checkbox("Confirmo excluir", key=f"novo_confirma_excluir_{c['id']}")
+                    if st.button("Excluir definitivamente", key=f"novo_excluir_{c['id']}", use_container_width=True):
+                        if not confirma:
+                            st.error("Marque a confirmação antes de excluir.")
+                        else:
+                            ok, msg = excluir_cliente_completo(c["id"])
+                            if ok:
+                                st.success(msg)
+                                st.rerun()
+                            else:
+                                st.error(msg)
+
+    if len(novos_7) > 12:
+        st.caption(f"Mostrando os 12 mais recentes de {len(novos_7)} novos cadastros dos últimos 7 dias.")
+
+
 def atualizar_status(usuario_id, status):
     supabase.table("usuarios").update({"status": status}).eq("id", usuario_id).execute()
 
@@ -3890,19 +4046,23 @@ else:
         total = len(usuarios)
         ativos = len([u for u in usuarios if u.get("status") == "ativo"])
         bloqueados = len([u for u in usuarios if u.get("status") == "bloqueado"])
+        novos_hoje_admin = len([u for u in clientes if dias_desde_criacao(u) == 0])
+        novos_7_admin = len([u for u in clientes if dias_desde_criacao(u) <= 7])
 
         total_pago_fin = sum(float(m.get("valor_pago") or 0) for m in todas_minis if (m.get("status_pagamento") or "pendente") == "pago")
         total_pendente_fin = sum(float(m.get("valor_pago") or 0) for m in todas_minis if (m.get("status_pagamento") or "pendente") == "pendente")
         total_reservado_fin = sum(float(m.get("valor_pago") or 0) for m in todas_minis if (m.get("status_pagamento") or "pendente") == "reservado")
 
-        m1, m2, m3, m4 = st.columns(4)
+        m1, m2, m3, m4, m5 = st.columns(5)
         with m1:
             st.markdown(f'<div class="metric-card"><div class="metric-icon">👥</div><h2>{total}</h2><p>Total usuários</p></div>', unsafe_allow_html=True)
         with m2:
-            st.markdown(f'<div class="metric-card"><div class="metric-icon">✅</div><h2>{ativos}</h2><p>Ativos</p></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-card"><div class="metric-icon">🆕</div><h2>{novos_hoje_admin}</h2><p>Novos hoje</p></div>', unsafe_allow_html=True)
         with m3:
-            st.markdown(f'<div class="metric-card"><div class="metric-icon">🔒</div><h2>{bloqueados}</h2><p>Bloqueados</p></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-card"><div class="metric-icon">📅</div><h2>{novos_7_admin}</h2><p>Novos 7 dias</p></div>', unsafe_allow_html=True)
         with m4:
+            st.markdown(f'<div class="metric-card"><div class="metric-icon">✅</div><h2>{ativos}</h2><p>Ativos</p></div>', unsafe_allow_html=True)
+        with m5:
             st.markdown(f'<div class="metric-card"><div class="metric-icon">💰</div><h2>{money(total_pago_fin)}</h2><p>Pago</p></div>', unsafe_allow_html=True)
 
         aba_clientes, aba_loja, aba_pedidos, aba_minis, aba_financeiro, aba_hall_admin, aba_timeline_admin, aba_sorteios_admin, aba_lab_admin, aba_exec_admin, aba_checkout_admin, aba_notif_admin = st.tabs([
@@ -3924,6 +4084,8 @@ else:
         # ABA CLIENTES
         # =========================
         with aba_clientes:
+            render_admin_novos_cadastros(clientes)
+
             st.markdown("""
             <div class="admin-work-card">
                 <h3>➕ Criar cliente</h3>

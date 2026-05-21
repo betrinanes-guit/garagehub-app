@@ -636,10 +636,11 @@ def buscar_loja_minis(apenas_disponiveis=False):
 
     for tentativa in range(3):
         try:
-            # Busca leve: não traz foto_url aqui porque registros antigos podem ter base64 gigante
-            # e isso causa timeout no Supabase/PostgREST.
+            # Busca leve com foto_url.
+            # As fotos antigas em base64 já foram migradas para o Supabase Storage,
+            # então foto_url agora contém apenas URL pública leve.
             query = supabase.table("loja_minis").select(
-                "id,nome,marca,serie,ano,raridade,valor,valor_estimado,status,destaque,criado_em"
+                "id,nome,marca,serie,ano,raridade,valor,valor_estimado,foto_url,status,destaque,criado_em"
             )
 
             if apenas_disponiveis:

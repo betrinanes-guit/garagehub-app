@@ -663,7 +663,7 @@ def badge_estoque_loja(qtd):
         qtd = 0
 
     if qtd <= 0:
-        return '<span class="market-tag market-tag-sold">VENDIDO</span>'
+        return '<span class="market-tag market-tag-sold">ESGOTADO</span>'
     return '<span class="market-tag market-tag-ok">DISPONÍVEL</span>'
 
 
@@ -990,13 +990,25 @@ def render_admin_garagem_cliente(usuario_cliente):
         item_loja_escolhido = opcoes_loja_cliente.get(escolha_loja_cliente)
         if item_loja_escolhido:
             estoque_atual_loja = obter_estoque_loja_item(item_loja_escolhido)
+
+            quantidade_lancamento = st.number_input(
+                "Quantidade para inserir nesta garagem",
+                min_value=1,
+                max_value=max(1, int(estoque_atual_loja or 1)),
+                value=1,
+                step=1,
+                key=f"admin_qtd_lancar_loja_cliente_{usuario_cliente.get('id')}"
+            )
+
+            quantidade_lancamento = int(quantidade_lancamento or 1)
+
             c_loja_1, c_loja_2, c_loja_3 = st.columns([1, 1, 1])
             with c_loja_1:
                 st.metric("Estoque atual", estoque_atual_loja)
             with c_loja_2:
                 st.metric("Valor venda", money(item_loja_escolhido.get("valor") or 0))
             with c_loja_3:
-                st.metric("Após lançar", max(0, estoque_atual_loja - 1))
+                st.metric("Após lançar", max(0, estoque_atual_loja - quantidade_lancamento))
 
             status_lancamento = st.selectbox(
                 "Status de pagamento para lançar na garagem",
@@ -1012,34 +1024,38 @@ def render_admin_garagem_cliente(usuario_cliente):
             )
 
             if st.button(
-                "➕ Inserir na garagem e baixar estoque",
+                "➕ Inserir quantidade na garagem e baixar estoque",
                 use_container_width=True,
                 key=f"admin_lancar_loja_cliente_{usuario_cliente.get('id')}"
             ):
                 try:
                     item_atualizado = buscar_loja_item_por_id(item_loja_escolhido.get("id")) or item_loja_escolhido
                     estoque_real = obter_estoque_loja_item(item_atualizado)
+                    quantidade_lancamento = int(quantidade_lancamento or 1)
 
                     if estoque_real <= 0:
                         st.error("Este item não possui estoque disponível na Loja.")
+                    elif quantidade_lancamento > estoque_real:
+                        st.error(f"Quantidade solicitada ({quantidade_lancamento}) maior que o estoque disponível ({estoque_real}).")
                     else:
-                        cadastrar_mini(
-                            usuario_cliente.get("id"),
-                            item_atualizado.get("nome") or "Mini da loja",
-                            item_atualizado.get("marca") or "Hot Wheels",
-                            item_atualizado.get("serie") or "",
-                            item_atualizado.get("ano") or "",
-                            item_atualizado.get("raridade") or "Comum",
-                            float(item_atualizado.get("valor") or 0),
-                            float(item_atualizado.get("valor_estimado") or item_atualizado.get("valor") or 0),
-                            item_atualizado.get("foto_url") or "",
-                            status_lancamento,
-                            "compra",
-                            observacao_lancamento or "Lançado manualmente pelo admin a partir da Loja"
-                        )
+                        for _ in range(quantidade_lancamento):
+                            cadastrar_mini(
+                                usuario_cliente.get("id"),
+                                item_atualizado.get("nome") or "Mini da loja",
+                                item_atualizado.get("marca") or "Hot Wheels",
+                                item_atualizado.get("serie") or "",
+                                item_atualizado.get("ano") or "",
+                                item_atualizado.get("raridade") or "Comum",
+                                float(item_atualizado.get("valor") or 0),
+                                float(item_atualizado.get("valor_estimado") or item_atualizado.get("valor") or 0),
+                                item_atualizado.get("foto_url") or "",
+                                status_lancamento,
+                                "compra",
+                                observacao_lancamento or "Lançado manualmente pelo admin a partir da Loja"
+                            )
 
-                        novo_estoque = baixar_estoque_loja_item(item_atualizado, 1)
-                        st.success(f"Mini lançada na garagem. Estoque atualizado para {novo_estoque} unidade(s).")
+                        novo_estoque = baixar_estoque_loja_item(item_atualizado, quantidade_lancamento)
+                        st.success(f"{quantidade_lancamento} mini(s) lançada(s) na garagem. Estoque atualizado para {novo_estoque} unidade(s).")
                         st.rerun()
                 except Exception as e:
                     st.error(f"Erro ao lançar mini da Loja na garagem: {e}")
@@ -5285,7 +5301,7 @@ else:
                         else:
                             loja_foto_url = upload_storage(loja_foto, "loja", loja_nome)
                             try:
-                                loja_status_final = "vendido" if int(loja_estoque or 0) <= 0 else loja_status
+                                loja_status_final = "vendido" if int(loja_estoque or 0) <= 0 else "disponivel"
                                 loja_destaque_final = atualizar_destaque_com_qtd(loja_destaque, loja_estoque)
                                 cadastrar_loja_mini(loja_nome, loja_marca, loja_serie, loja_ano, loja_raridade, loja_valor, loja_estimado, loja_foto_url, loja_status_final, loja_destaque_final)
                                 st.success("Mini publicada na loja.")
@@ -5338,7 +5354,7 @@ else:
                             nova_foto = loja_edit.get("foto_url") or ""
                             if el_foto is not None:
                                 nova_foto = upload_storage(el_foto, "loja", el_nome)
-                            status_final = "vendido" if int(el_estoque or 0) <= 0 else el_status
+                            status_final = "vendido" if int(el_estoque or 0) <= 0 else "disponivel"
                             atualizar_loja_mini(loja_edit["id"], {
                                 "nome": el_nome,
                                 "marca": el_marca,
@@ -5367,9 +5383,10 @@ else:
                     marca_admin = html.escape(str(item.get('marca') or 'Hot Wheels'))
                     serie_admin = html.escape(str(item.get('serie') or ''))
                     raridade_admin = html.escape(str(item.get('raridade') or 'Comum'))
-                    status_admin = html.escape(str(item.get('status') or 'disponivel'))
                     estoque_admin = obter_estoque_loja_item(item)
-                    estoque_admin_texto = f"{estoque_admin} unidade{'s' if estoque_admin != 1 else ''}"
+                    status_admin = "ESGOTADO" if estoque_admin <= 0 else "DISPONÍVEL"
+                    status_admin_classe = "market-tag-sold" if estoque_admin <= 0 else "market-tag-ok"
+                    estoque_admin_texto = texto_unidades_estoque(estoque_admin)
 
                     st.markdown(f"""
                     <div class="market-card">
@@ -5379,7 +5396,7 @@ else:
                             <h3 class="market-name">{nome_admin}</h3>
                             <div class="market-tags">
                                 <span class="market-tag market-tag-gold">{raridade_admin}</span>
-                                <span class="market-tag market-tag-ok">{status_admin}</span>
+                                <span class="market-tag {status_admin_classe}">{status_admin}</span>
                             </div>
                             <p class="market-line"><b>Marca:</b> {marca_admin}</p>
                             <p class="market-line"><b>Série:</b> {serie_admin}</p>
@@ -5399,7 +5416,7 @@ else:
             st.markdown("""
             <div class="admin-work-card">
                 <h3>💰 Pedidos da loja e lançamentos</h3>
-                <p>Gerencie solicitações da Loja. Ao clicar em Pago + garagem, o sistema conclui o pedido, lança a mini na garagem do cliente e marca o item como vendido.</p>
+                <p>Gerencie solicitações da Loja. Ao clicar em Pago + garagem, o sistema conclui o pedido, lança a mini na garagem do cliente e atualiza o estoque automaticamente.</p>
             </div>
             """, unsafe_allow_html=True)
 

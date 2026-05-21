@@ -3887,97 +3887,323 @@ def detectar_mini_por_texto(nome_arquivo="", observacao=""):
 
 
 def render_scanner_ia_demo():
-    # Scanner IA Lab: câmera/upload, prévia e sugestão editável.
+    """Scanner IA Premium integrado ao GarageHub usando Gemini Vision."""
     usuario_atual = st.session_state.get("usuario") or {}
     is_admin = usuario_atual.get("tipo") == "admin"
 
     st.markdown('''
     <div class="scanner-hero">
-        <div class="scanner-kicker">🤖 Scanner IA Lab</div>
-        <h2>Scanner de Miniaturas</h2>
-        <p>Envie uma foto ou use a câmera. Nesta versão o app faz uma leitura assistida/local com base no nome do arquivo e nas observações. A área já fica pronta para conectar uma IA de visão depois.</p>
+        <div class="scanner-kicker">🤖 Scanner IA Premium</div>
+        <h2>TRINANES AI GARAGE VISION</h2>
+        <p>Use câmera ou upload para analisar mini solto, blister, frente/verso ou expositor. A IA retorna ficha estruturada e você pode salvar direto na garagem.</p>
     </div>
     <div class="pro-grid">
-        <div class="scanner-step"><h3>📷 1. Captura</h3><p>Foto da mini, embalagem ou blister.</p></div>
-        <div class="scanner-step"><h3>🧠 2. Sugestão</h3><p>Nome, marca, série, ano, raridade e preço sugerido.</p></div>
-        <div class="scanner-step"><h3>🏁 3. Ação</h3><p>Admin publica na loja ou lança na garagem. Cliente usa como consulta.</p></div>
+        <div class="scanner-step"><h3>📷 1. Captura</h3><p>Foto da mini, embalagem, blister ou expositor.</p></div>
+        <div class="scanner-step"><h3>🧠 2. IA Gemini</h3><p>Modelo, marca, série, raridade, SKU, cores e valor estimado.</p></div>
+        <div class="scanner-step"><h3>🏁 3. Salvar</h3><p>Valide/ajuste os dados e salve na garagem ou publique na loja.</p></div>
     </div>
     ''', unsafe_allow_html=True)
 
-    modo = st.radio("Modo de captura", ["Enviar imagem", "Usar câmera"], horizontal=True, key="scanner_modo_captura")
-    entrada_img = None
-    if modo == "Usar câmera":
-        entrada_img = st.camera_input("Aponte a câmera para a mini", key="scanner_camera_real")
-    else:
-        entrada_img = st.file_uploader("Enviar foto da mini", type=["jpg", "jpeg", "png"], key="scanner_upload_real")
+    try:
+        import json
+        import io
+        from PIL import Image
+        from google import genai
+        from google.genai import types
+    except Exception as e:
+        st.error("Dependências do Scanner IA não instaladas.")
+        st.info("No requirements.txt, inclua: google-genai e Pillow")
+        st.code(str(e))
+        return
 
-    obs = st.text_input(
-        "Observação para ajudar o scanner",
-        placeholder="Ex: Gulf, Kaido R34, STH, RLC, Fast & Furious, ano 2024...",
-        key="scanner_obs_texto"
+    try:
+        gemini_key = st.secrets["GEMINI_API_KEY"]
+    except Exception:
+        st.error("GEMINI_API_KEY não encontrada nos Secrets do Streamlit.")
+        st.info('Adicione nos Secrets: GEMINI_API_KEY="sua_chave"')
+        return
+
+    def preparar_imagem_para_gemini(arquivo):
+        if arquivo is None:
+            return None
+        try:
+            imagem = Image.open(arquivo)
+            if imagem.mode != "RGB":
+                imagem = imagem.convert("RGB")
+            imagem.thumbnail((1024, 1024))
+            buffer = io.BytesIO()
+            imagem.save(buffer, format="JPEG", quality=85, optimize=True)
+            buffer.seek(0)
+            return types.Part.from_bytes(data=buffer.getvalue(), mime_type="image/jpeg")
+        except Exception as e:
+            st.error(f"Erro ao preparar imagem: {e}")
+            return None
+
+    def limpar_json_scanner(texto):
+        texto = str(texto or "").strip().replace("```json", "").replace("```", "").strip()
+        match = re.search(r"\{.*\}", texto, re.DOTALL)
+        if match:
+            texto = match.group(0)
+        return json.loads(texto)
+
+    def prompt_scanner(modo):
+        return f'''
+Você é especialista profissional em miniaturas diecast 1:64:
+Hot Wheels, Mini GT, Kaido House, Matchbox, M2 Machines, GreenLight, Tarmac Works, Inno64, Johnny Lightning e similares.
+
+Tipo de análise solicitado pelo usuário:
+{modo}
+
+As imagens podem conter mini solto, blister completo, frente/verso do blister, expositor, vários minis juntos ou coleção inteira.
+
+Sua missão: identificar o máximo possível SEM inventar dados.
+Retorne APENAS JSON válido, sem texto antes e sem texto depois.
+
+{{
+  "tipo_imagem_detectada": "",
+  "modelo_detectado": "",
+  "fabricante_detectado": "",
+  "marca_linha": "",
+  "possivel_serie": "",
+  "series_index": "",
+  "sku": "",
+  "ano_lancamento": "",
+  "possivel_raridade": "",
+  "escala": "",
+  "casting": "",
+  "cor_principal": "",
+  "cor_base": "",
+  "cor_vidro": "",
+  "cor_interior": "",
+  "tipo_roda": "",
+  "pais_origem": "",
+  "designer": "",
+  "valor_estimado_brasil": "",
+  "nivel_confianca": "",
+  "detalhes_visuais": "",
+  "alerta_colecao": "",
+  "observacoes": "",
+  "itens_detectados": []
+}}
+
+Regras obrigatórias:
+- Nunca invente SKU, ano, designer ou série.
+- Se não tiver certeza, use "Não identificado".
+- Para raridade, use apenas: "Comum", "TH", "STH", "Premium", "RLC", "Chase", "Especial", "Limitado", "Não identificado".
+- O valor estimado deve ser em reais, aproximado, e com faixa. Exemplo: "R$ 80 a R$ 150".
+- Se for mini solto, priorize modelo, fabricante provável, cor, rodas, decals e confiança.
+- Se for blister, tente ler SKU, série, ano e informações impressas.
+- Se for expositor/coleção, preencha itens_detectados com uma lista simples dos minis encontrados.
+- nivel_confianca deve ser percentual, exemplo: "72%".
+- alerta_colecao deve dizer se parece item comum, raro, premium, chase ou item que merece pesquisa manual.
+'''
+
+    def primeiro_numero_reais(valor):
+        texto = str(valor or "")
+        nums = re.findall(r"\d+[\.,]?\d*", texto)
+        if not nums:
+            return 0.0
+        try:
+            return float(nums[0].replace(".", "").replace(",", "."))
+        except Exception:
+            return 0.0
+
+    def valor_limpo(dados, chave, padrao="Não identificado"):
+        valor = dados.get(chave, padrao) if isinstance(dados, dict) else padrao
+        if valor is None or str(valor).strip() == "":
+            return padrao
+        return str(valor).strip()
+
+    modo_analise = st.selectbox(
+        "Tipo de análise",
+        ["🚗 Mini solto", "📦 Blister frente e verso", "🖼️ Expositor / coleção", "🔍 Modo automático"],
+        key="scanner_ai_modo_analise"
     )
 
-    if entrada_img is not None:
-        st.image(entrada_img, caption="Imagem recebida pelo Scanner IA Lab", use_container_width=True)
-        sugestao = detectar_mini_por_texto(getattr(entrada_img, "name", "scanner"), obs)
+    envio = st.radio(
+        "Como quer enviar a imagem?",
+        ["📷 Usar câmera", "🖼️ Enviar foto"],
+        horizontal=True,
+        key="scanner_ai_tipo_envio"
+    )
+
+    foto_1 = foto_2 = foto_3 = None
+    if envio == "📷 Usar câmera":
+        foto_1 = st.camera_input("Foto principal", key="scanner_ai_camera_1")
+        if modo_analise == "📦 Blister frente e verso":
+            foto_2 = st.camera_input("Foto do verso do blister", key="scanner_ai_camera_2")
+        elif modo_analise in ["🖼️ Expositor / coleção", "🔍 Modo automático"]:
+            foto_2 = st.camera_input("Foto extra opcional", key="scanner_ai_camera_2_extra")
     else:
-        sugestao = detectar_mini_por_texto("", obs)
-        st.info("Envie uma foto ou digite uma observação para gerar a sugestão do scanner.")
+        foto_1 = st.file_uploader("Foto principal", type=["jpg", "jpeg", "png", "webp"], key="scanner_ai_upload_1")
+        if modo_analise == "📦 Blister frente e verso":
+            foto_2 = st.file_uploader("Foto do verso do blister", type=["jpg", "jpeg", "png", "webp"], key="scanner_ai_upload_2")
+        elif modo_analise in ["🖼️ Expositor / coleção", "🔍 Modo automático"]:
+            foto_2 = st.file_uploader("Foto extra opcional", type=["jpg", "jpeg", "png", "webp"], key="scanner_ai_upload_2_extra")
+            foto_3 = st.file_uploader("Mais uma foto opcional", type=["jpg", "jpeg", "png", "webp"], key="scanner_ai_upload_3")
+
+    fotos_validas = [f for f in [foto_1, foto_2, foto_3] if f is not None]
+    if fotos_validas:
+        st.image(fotos_validas[0], caption="Prévia da foto principal", use_container_width=True)
+
+    if st.button("🔥 Analisar mini com IA", use_container_width=True, key="scanner_ai_analisar"):
+        if not fotos_validas:
+            st.error("Envie pelo menos uma foto.")
+            return
+
+        with st.spinner("Analisando com Gemini IA..."):
+            imagens = []
+            for foto in fotos_validas:
+                parte = preparar_imagem_para_gemini(foto)
+                if parte:
+                    imagens.append(parte)
+
+            if not imagens:
+                st.error("Nenhuma imagem válida foi encontrada. Tente outra foto.")
+                return
+
+            try:
+                client = genai.Client(api_key=gemini_key)
+                resposta = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=[prompt_scanner(modo_analise)] + imagens,
+                    config={"temperature": 0.2, "response_mime_type": "application/json"}
+                )
+                dados = limpar_json_scanner(resposta.text)
+                st.session_state["scanner_ai_resultado"] = dados
+                st.session_state["scanner_ai_tem_foto"] = True
+                st.success("Mini analisado com sucesso!")
+            except Exception as e:
+                st.error("Erro ao consultar a IA.")
+                st.info("Possíveis causas: limite da API, chave inválida, billing desativado ou imagem muito pesada.")
+                st.code(str(e))
+                return
+
+    dados = st.session_state.get("scanner_ai_resultado")
+    if not dados:
+        st.info("Envie uma foto e clique em Analisar mini com IA para gerar a ficha.")
+        return
+
+    nome_sugerido = valor_limpo(dados, "modelo_detectado", "Mini identificada pela IA")
+    marca_sugerida = valor_limpo(dados, "fabricante_detectado", "Hot Wheels")
+    linha_sugerida = valor_limpo(dados, "marca_linha", "")
+    serie_sugerida = valor_limpo(dados, "possivel_serie", linha_sugerida if linha_sugerida != "Não identificado" else "")
+    ano_sugerido = valor_limpo(dados, "ano_lancamento", "")
+    raridade_sugerida = valor_limpo(dados, "possivel_raridade", "Não identificado")
+    valor_estimado_txt = valor_limpo(dados, "valor_estimado_brasil", "R$ 0")
+    valor_estimado_num = primeiro_numero_reais(valor_estimado_txt)
+    confianca = valor_limpo(dados, "nivel_confianca", "0%")
 
     st.markdown(f'''
     <div class="scanner-result">
-        <div class="scanner-score">{sugestao['confianca']}%</div>
-        <h3>Resultado sugerido</h3>
-        <p><b>{html.escape(sugestao['nome'])}</b> • {html.escape(sugestao['marca'])} • {html.escape(sugestao['raridade'])}</p>
-        <p>Série: <b>{html.escape(sugestao['serie'] or 'A confirmar')}</b> • Ano: <b>{html.escape(sugestao['ano'] or 'A confirmar')}</b> • Valor sugerido: <b>{money(sugestao['valor'])}</b></p>
+        <div class="scanner-score">{html.escape(confianca)}</div>
+        <h3>Resultado da IA</h3>
+        <p><b>{html.escape(nome_sugerido)}</b> • {html.escape(marca_sugerida)} • {html.escape(raridade_sugerida)}</p>
+        <p>Série: <b>{html.escape(serie_sugerida or 'Não identificado')}</b> • Ano: <b>{html.escape(ano_sugerido or 'Não identificado')}</b> • Valor IA: <b>{html.escape(valor_estimado_txt)}</b></p>
+        <p>{html.escape(valor_limpo(dados, 'alerta_colecao', ''))}</p>
     </div>
     ''', unsafe_allow_html=True)
 
-    with st.expander("Ajustar dados sugeridos pelo scanner", expanded=True):
+    campos_principais = [
+        "tipo_imagem_detectada", "modelo_detectado", "fabricante_detectado", "marca_linha",
+        "possivel_serie", "series_index", "sku", "ano_lancamento", "possivel_raridade",
+        "escala", "casting", "cor_principal", "tipo_roda", "pais_origem", "designer",
+        "valor_estimado_brasil", "nivel_confianca", "detalhes_visuais", "alerta_colecao", "observacoes"
+    ]
+    with st.expander("📋 Ver ficha completa da IA", expanded=False):
+        for campo in campos_principais:
+            st.write(f"**{campo.replace('_', ' ').title()}:** {dados.get(campo, 'Não identificado')}")
+        itens = dados.get("itens_detectados", [])
+        if itens:
+            st.write("**Itens detectados:**")
+            for item in itens:
+                st.write(item)
+
+    with st.expander("✏️ Validar e ajustar antes de salvar", expanded=True):
         c1, c2 = st.columns(2)
         with c1:
-            s_nome = st.text_input("Nome identificado", value=sugestao["nome"], key="scanner_nome_sugerido")
-            s_marca = st.text_input("Marca", value=sugestao["marca"], key="scanner_marca_sugerida")
-            s_serie = st.text_input("Série", value=sugestao["serie"], key="scanner_serie_sugerida")
-            s_ano = st.text_input("Ano", value=sugestao["ano"], key="scanner_ano_sugerido")
+            s_nome = st.text_input("Nome identificado", value=nome_sugerido, key="scanner_ai_nome_final")
+            s_marca = st.text_input("Marca", value=marca_sugerida, key="scanner_ai_marca_final")
+            s_serie = st.text_input("Série / Linha", value=serie_sugerida, key="scanner_ai_serie_final")
+            s_ano = st.text_input("Ano", value=ano_sugerido if ano_sugerido != "Não identificado" else "", key="scanner_ai_ano_final")
         with c2:
-            opcoes_r = ["Comum", "TH", "STH", "Premium", "RLC", "Chase", "Especial"]
-            s_raridade = st.selectbox("Raridade", opcoes_r, index=opcoes_r.index(sugestao["raridade"]) if sugestao["raridade"] in opcoes_r else 0, key="scanner_raridade_sugerida")
-            s_valor = st.number_input("Preço de venda sugerido", min_value=0.0, step=1.0, value=float(sugestao["valor"]), key="scanner_valor_sugerido")
-            s_estimado = st.number_input("Valor estimado sugerido", min_value=0.0, step=1.0, value=float(sugestao["valor_estimado"]), key="scanner_estimado_sugerido")
-            s_destaque = st.text_input("Destaque", value="Scanner IA Lab", key="scanner_destaque_sugerido")
+            opcoes_r = ["Comum", "TH", "STH", "Premium", "RLC", "Chase", "Especial", "Limitado", "Não identificado"]
+            idx_r = opcoes_r.index(raridade_sugerida) if raridade_sugerida in opcoes_r else len(opcoes_r) - 1
+            s_raridade = st.selectbox("Raridade", opcoes_r, index=idx_r, key="scanner_ai_raridade_final")
+            s_valor_pago = st.number_input("Valor pago / venda", min_value=0.0, step=1.0, value=0.0, key="scanner_ai_valor_pago_final")
+            s_estimado = st.number_input("Valor estimado", min_value=0.0, step=1.0, value=float(valor_estimado_num or 0), key="scanner_ai_estimado_final")
+            s_destaque = st.text_input("Destaque / observação", value="Scanner IA Premium", key="scanner_ai_destaque_final")
 
-    if is_admin:
-        st.markdown('<div class="checkout-box"><h3>👑 Ações de admin</h3><p>Use o resultado do scanner para publicar na loja ou lançar diretamente na garagem de um cliente.</p></div>', unsafe_allow_html=True)
-        ac1, ac2 = st.columns(2)
-        with ac1:
-            if st.button("🛒 Publicar sugestão na loja", key="scanner_publicar_loja", use_container_width=True):
-                foto_url = upload_storage(entrada_img, "scanner", s_nome) if entrada_img is not None else ""
-                try:
-                    cadastrar_loja_mini(s_nome, s_marca, s_serie, s_ano, s_raridade, s_valor, s_estimado, foto_url, "disponivel", s_destaque)
-                    st.success("Mini publicada na loja usando a sugestão do Scanner IA Lab.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Não consegui publicar na loja. Verifique a tabela loja_minis. Detalhe: {e}")
-        with ac2:
+    json_data = json.dumps(dados, ensure_ascii=False, indent=2)
+    st.download_button("⬇️ Baixar JSON do scanner", data=json_data, file_name="mini_scanner_resultado.json", mime="application/json", use_container_width=True, key="scanner_ai_download_json")
+
+    foto_para_salvar = foto_1 or (fotos_validas[0] if fotos_validas else None)
+
+    if not is_admin:
+        if st.button("➕ Adicionar à minha garagem", use_container_width=True, key="scanner_ai_add_minha_garagem"):
+            if not usuario_atual.get("id"):
+                st.error("Usuário não identificado. Faça login novamente.")
+                return
+            foto_url = upload_storage(foto_para_salvar, "scanner", s_nome) if foto_para_salvar is not None else ""
+            cadastrar_mini(
+                usuario_atual.get("id"), s_nome, s_marca, s_serie, s_ano, s_raridade,
+                float(s_valor_pago or 0), float(s_estimado or 0), foto_url, "pago", "scanner", s_destaque
+            )
             try:
-                clientes_scanner = [u for u in listar_usuarios() if u.get("tipo") != "admin"]
+                supabase.table("scanner_logs").insert({
+                    "usuario_id": usuario_atual.get("id"),
+                    "imagem_url": foto_url,
+                    "resultado": s_nome,
+                    "confianca": confianca,
+                }).execute()
             except Exception:
-                clientes_scanner = []
-            if clientes_scanner:
-                mapa_clientes = {f"{c.get('nome','')} — {c.get('email','')}": c for c in clientes_scanner}
-                cliente_label = st.selectbox("Cliente para lançar na garagem", list(mapa_clientes.keys()), key="scanner_cliente_garagem")
-                if st.button("🏎️ Lançar na garagem do cliente", key="scanner_lancar_garagem", use_container_width=True):
-                    foto_url = upload_storage(entrada_img, "scanner", s_nome) if entrada_img is not None else ""
-                    cliente_sel = mapa_clientes[cliente_label]
-                    cadastrar_mini(cliente_sel["id"], s_nome, s_marca, s_serie, s_ano, s_raridade, s_valor, s_estimado, foto_url, "pago", "scanner/admin", "Scanner IA")
-                    st.success("Mini lançada na garagem do cliente a partir do Scanner IA Lab.")
-                    st.rerun()
-            else:
-                st.info("Cadastre clientes para lançar direto na garagem.")
-    else:
-        st.markdown('<div class="checkout-box"><h3>🏁 Consulta do colecionador</h3><p>Use o scanner para consultar a mini. Para adicionar oficialmente na garagem, o admin precisa validar e lançar.</p></div>', unsafe_allow_html=True)
-        st.caption("Na próxima etapa, essa foto poderá virar uma solicitação automática para o admin validar.")
+                pass
+            st.success("Mini adicionada à sua garagem pelo Scanner IA Premium.")
+            st.rerun()
+        return
+
+    st.markdown('<div class="checkout-box"><h3>👑 Ações de admin</h3><p>Use o resultado validado para publicar na loja ou lançar diretamente na garagem de um cliente.</p></div>', unsafe_allow_html=True)
+    ac1, ac2 = st.columns(2)
+    with ac1:
+        categoria_scanner = st.selectbox("Categoria da Loja", CATEGORIAS_LOJA, key="scanner_ai_categoria_loja")
+        qtd_loja = st.number_input("Quantidade para publicar na loja", min_value=1, step=1, value=1, key="scanner_ai_qtd_loja")
+        if st.button("🛒 Publicar na loja", key="scanner_ai_publicar_loja", use_container_width=True):
+            foto_url = upload_storage(foto_para_salvar, "scanner", s_nome) if foto_para_salvar is not None else ""
+            destaque_loja = atualizar_destaque_com_qtd_e_categoria(s_destaque, int(qtd_loja or 1), categoria_scanner)
+            try:
+                cadastrar_loja_mini(s_nome, s_marca, s_serie, s_ano, s_raridade, float(s_valor_pago or s_estimado or 0), float(s_estimado or 0), foto_url, "disponivel", destaque_loja)
+                st.success("Mini publicada na loja pelo Scanner IA Premium.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Não consegui publicar na loja: {e}")
+    with ac2:
+        try:
+            clientes_scanner = [u for u in listar_usuarios() if str(u.get("tipo") or "usuario").lower() != "admin"]
+        except Exception:
+            clientes_scanner = []
+        if clientes_scanner:
+            mapa_clientes = {f"{c.get('nome','')} — {c.get('email','')}": c for c in clientes_scanner}
+            cliente_label = st.selectbox("Cliente para lançar na garagem", list(mapa_clientes.keys()), key="scanner_ai_cliente_garagem")
+            status_lancar = st.selectbox("Status pagamento", ["pago", "pendente", "reservado"], key="scanner_ai_status_lancar")
+            if st.button("🏎️ Lançar na garagem do cliente", key="scanner_ai_lancar_garagem", use_container_width=True):
+                foto_url = upload_storage(foto_para_salvar, "scanner", s_nome) if foto_para_salvar is not None else ""
+                cliente_sel = mapa_clientes[cliente_label]
+                cadastrar_mini(cliente_sel["id"], s_nome, s_marca, s_serie, s_ano, s_raridade, float(s_valor_pago or 0), float(s_estimado or 0), foto_url, status_lancar, "scanner/admin", s_destaque)
+                try:
+                    supabase.table("scanner_logs").insert({
+                        "usuario_id": cliente_sel.get("id"),
+                        "imagem_url": foto_url,
+                        "resultado": s_nome,
+                        "confianca": confianca,
+                    }).execute()
+                except Exception:
+                    pass
+                st.success("Mini lançada na garagem do cliente pelo Scanner IA Premium.")
+                st.rerun()
+        else:
+            st.info("Cadastre clientes para lançar direto na garagem.")
+
+
 
 
 # =========================

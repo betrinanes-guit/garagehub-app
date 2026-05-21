@@ -4,6 +4,7 @@ import mimetypes
 import re
 import hashlib
 import random
+import time
 from pathlib import Path
 from datetime import datetime
 
@@ -377,6 +378,40 @@ def upload_storage(uploaded_file, pasta, prefixo):
     return f"data:{mime};base64,{b64}"
 
 
+def upload_storage_loja(uploaded_file, prefixo):
+    """Upload EXCLUSIVO para fotos da Loja.
+
+    Diferente do upload geral, aqui NÃO existe fallback em base64.
+    Motivo: base64 dentro de loja_minis.foto_url deixa a tabela pesada e causa timeout.
+    A foto continua em qualidade original no Supabase Storage e o banco guarda só a URL pública.
+    """
+    if uploaded_file is None:
+        return ""
+
+    extensao = uploaded_file.name.split(".")[-1].lower()
+    mime = mimetypes.guess_type(uploaded_file.name)[0] or "image/jpeg"
+    nome = f"loja/{slugify(prefixo)}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}.{extensao}"
+    dados = uploaded_file.getvalue()
+
+    try:
+        supabase.storage.from_(STORAGE_BUCKET).upload(
+            nome,
+            dados,
+            file_options={"content-type": mime, "upsert": "true"}
+        )
+        url_publica = supabase.storage.from_(STORAGE_BUCKET).get_public_url(nome)
+        if url_publica and str(url_publica).startswith("http"):
+            return str(url_publica)
+    except Exception as e:
+        raise Exception(
+            "Falha ao enviar a foto da Loja para o Supabase Storage. "
+            "Verifique se o bucket 'fotos-minis' existe e está público. "
+            f"Erro real: {e}"
+        )
+
+    raise Exception("Não foi possível obter URL pública da foto enviada para o Storage.")
+
+
 def upload_perfil_avatar(uploaded_file, pasta="perfis", prefixo="avatar"):
     """
     Upload blindado para foto de perfil.
@@ -592,10 +627,39 @@ def excluir_mini(mini_id):
 
 
 def buscar_loja_minis(apenas_disponiveis=False):
-    query = supabase.table("loja_minis").select("*")
-    if apenas_disponiveis:
-        query = query.eq("status", "disponivel")
-    return query.order("criado_em", desc=True).execute().data
+    """Busca os itens da Loja com retentativa para erro intermitente de cache do Supabase/PostgREST.
+
+    Importante: não transforma todo erro em "tabela não existe".
+    Se der erro, a tela mostra o erro real para facilitar o diagnóstico.
+    """
+    ultimo_erro = None
+
+    for tentativa in range(3):
+        try:
+            # Busca leve: não traz foto_url aqui porque registros antigos podem ter base64 gigante
+            # e isso causa timeout no Supabase/PostgREST.
+            query = supabase.table("loja_minis").select(
+                "id,nome,marca,serie,ano,raridade,valor,valor_estimado,status,destaque,criado_em"
+            )
+
+            if apenas_disponiveis:
+                query = query.eq("status", "disponivel")
+
+            resultado = query.order("criado_em", desc=True).execute()
+            return resultado.data or []
+
+        except Exception as e:
+            ultimo_erro = e
+            erro_txt = str(e).lower()
+
+            # Erro intermitente conhecido do Supabase/PostgREST logo após alterações de tabela/deploy.
+            if ("pgrst205" in erro_txt or "schema cache" in erro_txt or "could not find the table" in erro_txt) and tentativa < 2:
+                time.sleep(0.8)
+                continue
+
+            raise
+
+    raise ultimo_erro
 
 
 def cadastrar_loja_mini(nome, marca, serie, ano, raridade, valor, valor_estimado, foto_url, status, destaque):
@@ -4144,7 +4208,7 @@ Regras obrigatórias:
             if not usuario_atual.get("id"):
                 st.error("Usuário não identificado. Faça login novamente.")
                 return
-            foto_url = upload_storage(foto_para_salvar, "scanner", s_nome) if foto_para_salvar is not None else ""
+            foto_url = upload_storage_loja(foto_para_salvar, s_nome) if foto_para_salvar is not None else ""
             cadastrar_mini(
                 usuario_atual.get("id"), s_nome, s_marca, s_serie, s_ano, s_raridade,
                 float(s_valor_pago or 0), float(s_estimado or 0), foto_url, "pago", "scanner", s_destaque
@@ -4168,7 +4232,7 @@ Regras obrigatórias:
         categoria_scanner = st.selectbox("Categoria da Loja", CATEGORIAS_LOJA, key="scanner_ai_categoria_loja")
         qtd_loja = st.number_input("Quantidade para publicar na loja", min_value=1, step=1, value=1, key="scanner_ai_qtd_loja")
         if st.button("🛒 Publicar na loja", key="scanner_ai_publicar_loja", use_container_width=True):
-            foto_url = upload_storage(foto_para_salvar, "scanner", s_nome) if foto_para_salvar is not None else ""
+            foto_url = upload_storage_loja(foto_para_salvar, s_nome) if foto_para_salvar is not None else ""
             destaque_loja = atualizar_destaque_com_qtd_e_categoria(s_destaque, int(qtd_loja or 1), categoria_scanner)
             try:
                 cadastrar_loja_mini(s_nome, s_marca, s_serie, s_ano, s_raridade, float(s_valor_pago or s_estimado or 0), float(s_estimado or 0), foto_url, "disponivel", destaque_loja)
@@ -4186,7 +4250,7 @@ Regras obrigatórias:
             cliente_label = st.selectbox("Cliente para lançar na garagem", list(mapa_clientes.keys()), key="scanner_ai_cliente_garagem")
             status_lancar = st.selectbox("Status pagamento", ["pago", "pendente", "reservado"], key="scanner_ai_status_lancar")
             if st.button("🏎️ Lançar na garagem do cliente", key="scanner_ai_lancar_garagem", use_container_width=True):
-                foto_url = upload_storage(foto_para_salvar, "scanner", s_nome) if foto_para_salvar is not None else ""
+                foto_url = upload_storage_loja(foto_para_salvar, s_nome) if foto_para_salvar is not None else ""
                 cliente_sel = mapa_clientes[cliente_label]
                 cadastrar_mini(cliente_sel["id"], s_nome, s_marca, s_serie, s_ano, s_raridade, float(s_valor_pago or 0), float(s_estimado or 0), foto_url, status_lancar, "scanner/admin", s_destaque)
                 try:
@@ -5766,6 +5830,8 @@ else:
             </div>
             """, unsafe_allow_html=True)
 
+            st.caption("📸 Novas fotos da Loja serão salvas em qualidade original no Supabase Storage. O banco guarda apenas o link, evitando timeout.")
+
             with st.expander("🏁 Cadastrar mini na loja", expanded=False):
                 st.markdown("### 🛒 Novo mini para marketplace")
                 with st.form("form_admin_loja_mini"):
@@ -5789,7 +5855,7 @@ else:
                         if not loja_nome:
                             st.error("Informe o nome da mini.")
                         else:
-                            loja_foto_url = upload_storage(loja_foto, "loja", loja_nome)
+                            loja_foto_url = upload_storage_loja(loja_foto, loja_nome)
                             try:
                                 loja_status_final = "vendido" if int(loja_estoque or 0) <= 0 else "disponivel"
                                 loja_destaque_final = atualizar_destaque_com_qtd_e_categoria(loja_destaque, loja_estoque, loja_categoria)
@@ -5797,14 +5863,15 @@ else:
                                 st.success("Mini publicada na loja.")
                                 st.rerun()
                             except Exception as e:
-                                st.error("Não foi possível salvar na loja. Confirme se a tabela loja_minis existe no Supabase.")
+                                st.error(f"Não foi possível salvar na loja. Erro real: {e}")
 
             st.subheader("Minis cadastradas na loja")
             try:
                 loja_minis_admin = buscar_loja_minis(apenas_disponiveis=False)
-            except Exception:
+            except Exception as e:
                 loja_minis_admin = []
-                st.error("Tabela loja_minis ainda não existe. Rode o SQL informado antes de usar a loja.")
+                st.error(f"Erro real ao carregar a loja_minis: {e}")
+                st.info("A tabela loja_minis já foi confirmada no Supabase. Se aparecer PGRST205/schema cache, faça Reboot app no Streamlit e aguarde alguns segundos.")
 
             if not loja_minis_admin:
                 st.info("Nenhuma mini cadastrada na loja ainda.")
@@ -5845,7 +5912,7 @@ else:
                         if salvar_loja:
                             nova_foto = loja_edit.get("foto_url") or ""
                             if el_foto is not None:
-                                nova_foto = upload_storage(el_foto, "loja", el_nome)
+                                nova_foto = upload_storage_loja(el_foto, el_nome)
                             status_final = "vendido" if int(el_estoque or 0) <= 0 else "disponivel"
                             atualizar_loja_mini(loja_edit["id"], {
                                 "nome": el_nome,
@@ -6461,9 +6528,9 @@ else:
                     item for item in buscar_loja_minis(apenas_disponiveis=True)
                     if obter_estoque_loja_item(item) > 0
                 ]
-            except Exception:
+            except Exception as e:
                 loja_disponiveis = []
-                st.error("Loja ainda não configurada. Avise o administrador.")
+                st.error(f"Não consegui carregar a loja agora. Erro real: {e}")
 
             if not loja_disponiveis:
                 st.info("Nenhuma mini disponível na loja agora.")

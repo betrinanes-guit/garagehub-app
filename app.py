@@ -1757,9 +1757,25 @@ def render_admin_garagem_cliente(usuario_cliente):
     </div>
     """, unsafe_allow_html=True)
 
-    if st.button("⬅️ Voltar para usuários", use_container_width=True, key="voltar_admin_usuarios"):
-        st.session_state.pop("admin_cliente_garagem_id", None)
-        st.rerun()
+    col_admin_voltar, col_admin_refresh = st.columns([1, 1])
+    with col_admin_voltar:
+        if st.button("⬅️ Voltar para usuários", use_container_width=True, key="voltar_admin_usuarios"):
+            st.session_state.pop("admin_cliente_garagem_id", None)
+            st.rerun()
+
+    with col_admin_refresh:
+        if st.button("🔄 Atualizar dados do cliente", use_container_width=True, key=f"admin_refresh_garagem_cliente_{usuario_cliente.get('id')}"):
+            try:
+                st.cache_data.clear()
+            except Exception:
+                pass
+            try:
+                st.cache_resource.clear()
+            except Exception:
+                pass
+            st.rerun()
+
+    st.caption("Use este botão depois de lançar pré-vendas antigas ou minis manualmente para recarregar a garagem direto do Supabase.")
 
     # =========================
     # ADMIN — LANÇAR MINI DA LOJA NA GARAGEM DO CLIENTE
@@ -7495,6 +7511,21 @@ else:
             st.info("Scanner em modo assistido/local. Para identificação automática real, a próxima etapa técnica é conectar IA de visão + catálogo de referência.")
 
         with aba_garagem:
+            col_cliente_refresh_1, col_cliente_refresh_2 = st.columns([1, 3])
+            with col_cliente_refresh_1:
+                if st.button("🔄 Atualizar garagem", use_container_width=True, key=f"cliente_refresh_garagem_{usuario.get('id')}"):
+                    try:
+                        st.cache_data.clear()
+                    except Exception:
+                        pass
+                    try:
+                        st.cache_resource.clear()
+                    except Exception:
+                        pass
+                    st.rerun()
+            with col_cliente_refresh_2:
+                st.caption("Clique aqui quando o admin incluir pré-vendas antigas ou novas minis na sua garagem.")
+
             minis = buscar_minis(usuario["id"])
 
             if not minis:

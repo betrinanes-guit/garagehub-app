@@ -9,6 +9,7 @@ from pathlib import Path
 from datetime import datetime
 
 import streamlit as st
+import streamlit.components.v1 as components
 from supabase import create_client
 
 st.set_page_config(
@@ -155,6 +156,99 @@ def img_base64(path):
     if not path.exists():
         return ""
     return base64.b64encode(path.read_bytes()).decode()
+
+
+def injetar_melhorias_login_browser(lembrar_email=True):
+    """
+    Melhoria visual/UX da tela de login.
+    Não altera autenticação, banco, senha, admin, cliente, loja, pré-venda ou scanner.
+
+    O que faz:
+    - tenta colocar o foco no campo de e-mail;
+    - ajuda o navegador a reconhecer e-mail/senha para autocomplete;
+    - salva SOMENTE o e-mail no localStorage do navegador quando o cliente marcar "lembrar".
+    """
+    lembrar_js = "true" if lembrar_email else "false"
+
+    components.html(f"""
+    <script>
+    (function() {{
+        const lembrar = {lembrar_js};
+        const STORAGE_KEY = "garagehub_login_email";
+
+        function acharInputPorLabel(textoLabel) {{
+            const labels = Array.from(window.parent.document.querySelectorAll("label"));
+            const label = labels.find(l => (l.innerText || "").trim().toLowerCase().includes(textoLabel));
+            if (!label) return null;
+
+            const forId = label.getAttribute("for");
+            if (forId) {{
+                const byFor = window.parent.document.getElementById(forId);
+                if (byFor) return byFor;
+            }}
+
+            const bloco = label.closest("div");
+            if (bloco) {{
+                const input = bloco.querySelector("input");
+                if (input) return input;
+            }}
+
+            return null;
+        }}
+
+        function aplicar() {{
+            const emailInput =
+                acharInputPorLabel("e-mail") ||
+                window.parent.document.querySelector('input[aria-label="E-mail"]') ||
+                window.parent.document.querySelector('input[type="text"]');
+
+            const senhaInput =
+                acharInputPorLabel("senha") ||
+                window.parent.document.querySelector('input[type="password"]');
+
+            if (emailInput) {{
+                emailInput.setAttribute("autocomplete", "email");
+                emailInput.setAttribute("name", "email");
+                emailInput.setAttribute("id", "garagehub-login-email");
+                emailInput.setAttribute("inputmode", "email");
+
+                const salvo = window.parent.localStorage.getItem(STORAGE_KEY);
+                if (lembrar && salvo && !emailInput.value) {{
+                    emailInput.value = salvo;
+                    emailInput.dispatchEvent(new Event("input", {{ bubbles: true }}));
+                    emailInput.dispatchEvent(new Event("change", {{ bubbles: true }}));
+                }}
+
+                emailInput.addEventListener("input", function() {{
+                    if (lembrar) {{
+                        window.parent.localStorage.setItem(STORAGE_KEY, emailInput.value || "");
+                    }}
+                }});
+
+                setTimeout(function() {{
+                    try {{
+                        if (!emailInput.value) emailInput.focus();
+                    }} catch (e) {{}}
+                }}, 250);
+            }}
+
+            if (senhaInput) {{
+                senhaInput.setAttribute("autocomplete", "current-password");
+                senhaInput.setAttribute("name", "password");
+                senhaInput.setAttribute("id", "garagehub-login-password");
+            }}
+
+            if (!lembrar) {{
+                window.parent.localStorage.removeItem(STORAGE_KEY);
+            }}
+        }}
+
+        setTimeout(aplicar, 250);
+        setTimeout(aplicar, 900);
+        setTimeout(aplicar, 1800);
+    }})();
+    </script>
+    """, height=0)
 
 
 def money(valor):
@@ -5844,8 +5938,26 @@ if st.session_state.usuario is None:
             </div>
             """, unsafe_allow_html=True)
 
-            email = st.text_input("E-mail", key="login_email", placeholder="seuemail@exemplo.com")
-            senha = st.text_input("Senha", type="password", key="login_senha", placeholder="Digite sua senha")
+            lembrar_login = st.checkbox(
+                "Lembrar meu e-mail neste navegador",
+                value=True,
+                key="login_lembrar_email"
+            )
+
+            injetar_melhorias_login_browser(lembrar_login)
+
+            email = st.text_input(
+                "E-mail",
+                key="login_email",
+                placeholder="seuemail@exemplo.com"
+            )
+
+            senha = st.text_input(
+                "Senha",
+                type="password",
+                key="login_senha",
+                placeholder="Digite sua senha"
+            )
 
             col_login_1, col_login_2, col_login_3 = st.columns(3)
 
@@ -5914,6 +6026,11 @@ if st.session_state.usuario is None:
                 usuario = login(email, senha)
 
                 if usuario:
+                    if lembrar_login:
+                        st.session_state["ultimo_email_login"] = str(email or "").strip().lower()
+                    else:
+                        st.session_state.pop("ultimo_email_login", None)
+
                     st.session_state["usuario"] = usuario
                     st.rerun()
                 else:

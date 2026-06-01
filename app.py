@@ -932,6 +932,29 @@ def excluir_mini(mini_id):
     supabase.table("minis").delete().eq("id", mini_id).execute()
 
 
+def origem_operacional_mini(mini):
+    """Define a origem operacional sem exigir coluna nova no Supabase.
+
+    Regra de emergência:
+    - tipo_mini = loja/compra/pre_venda => protegido, não exclui pela garagem;
+    - tipo_mini = manual_migracao/manual/migracao => pode excluir pela garagem do cliente.
+    """
+    tipo = str((mini or {}).get("tipo_mini") or "").strip().lower()
+    destaque = str((mini or {}).get("destaque_cliente") or "").strip().lower()
+
+    if tipo in ["manual_migracao", "manual", "migracao", "migração"]:
+        return "manual"
+
+    if "origem: manual" in destaque or "migração" in destaque or "migracao" in destaque:
+        return "manual"
+
+    return "loja"
+
+
+def pode_excluir_mini_pela_garagem(mini):
+    return origem_operacional_mini(mini) == "manual"
+
+
 def buscar_loja_minis(apenas_disponiveis=False):
     """Busca os itens da Loja com retentativa para erro intermitente de cache do Supabase/PostgREST.
 
@@ -1787,8 +1810,8 @@ def concluir_pedido_na_garagem(pedido, loja_item=None):
         float(pedido.get("valor_estimado") or loja_item.get("valor_estimado") or 0),
         pedido.get("foto_url") or loja_item.get("foto_url") or "",
         "pago",
-        "compra",
-        ""
+        "loja",
+        "Origem: Loja / Pedido concluído"
     )
 
     atualizar_pedido(pedido["id"], {"status": "concluido"})
@@ -2102,8 +2125,8 @@ def render_admin_garagem_cliente(usuario_cliente):
                                 float(item_atualizado.get("valor_estimado") or item_atualizado.get("valor") or 0),
                                 item_atualizado.get("foto_url") or "",
                                 status_lancamento,
-                                "compra",
-                                observacao_lancamento or "Lançado manualmente pelo admin a partir da Loja",
+                                "loja",
+                                observacao_lancamento or "Lançado pelo admin a partir da Loja",
                                 data_pagamento_lancamento
                             )
 
@@ -2113,10 +2136,86 @@ def render_admin_garagem_cliente(usuario_cliente):
                 except Exception as e:
                     st.error(f"Erro ao lançar mini da Loja na garagem: {e}")
 
+    # =========================
+    # ADMIN — INSERIR MINI MANUAL / MIGRAÇÃO DIRETO NA GARAGEM
+    # =========================
+    st.markdown("""
+    <div class="admin-work-card">
+        <h3>✍️ Inserir mini manual / migração</h3>
+        <p>Use este caminho para acervo migrado de plataforma antiga. Não cadastra na Loja, não baixa estoque e poderá ser excluído pela própria garagem do cliente.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.expander("➕ Adicionar mini direto na garagem do cliente", expanded=False):
+        with st.form(f"form_admin_mini_manual_cliente_{usuario_cliente.get('id')}"):
+            mc1, mc2 = st.columns(2)
+
+            with mc1:
+                manual_nome = st.text_input("Nome da mini *", key=f"manual_nome_{usuario_cliente.get('id')}")
+                manual_marca = st.text_input("Marca", value="Hot Wheels", key=f"manual_marca_{usuario_cliente.get('id')}")
+                manual_serie = st.text_input("Série / linha", key=f"manual_serie_{usuario_cliente.get('id')}")
+                manual_ano = st.text_input("Ano", key=f"manual_ano_{usuario_cliente.get('id')}")
+                manual_foto = st.file_uploader("Foto da mini", type=["png", "jpg", "jpeg"], key=f"manual_foto_{usuario_cliente.get('id')}")
+
+            with mc2:
+                manual_raridade = st.selectbox(
+                    "Raridade",
+                    ["Comum", "TH", "STH", "Premium", "RLC", "Chase", "Especial", "Limitado", "Não identificado"],
+                    key=f"manual_raridade_{usuario_cliente.get('id')}"
+                )
+                manual_valor_pago = st.number_input("Valor pago", min_value=0.0, step=1.0, value=0.0, key=f"manual_valor_pago_{usuario_cliente.get('id')}")
+                manual_valor_estimado = st.number_input("Valor estimado", min_value=0.0, step=1.0, value=0.0, key=f"manual_valor_estimado_{usuario_cliente.get('id')}")
+                manual_status = st.selectbox("Status pagamento", ["pago", "pendente", "reservado", "cancelado"], index=0, key=f"manual_status_{usuario_cliente.get('id')}")
+                manual_data_pagamento = st.date_input(
+                    "Data prevista de pagamento (opcional)",
+                    value=None,
+                    format="DD/MM/YYYY",
+                    key=f"manual_data_pagamento_{usuario_cliente.get('id')}"
+                )
+
+            manual_obs = st.text_area(
+                "Observação / origem",
+                value="Origem: manual / migração de plataforma antiga",
+                key=f"manual_obs_{usuario_cliente.get('id')}"
+            )
+
+            salvar_manual = st.form_submit_button("💾 Salvar mini manual na garagem")
+
+            if salvar_manual:
+                if not str(manual_nome or "").strip():
+                    st.error("Informe o nome da mini para salvar na garagem do cliente.")
+                else:
+                    try:
+                        manual_foto_url = upload_storage(
+                            manual_foto,
+                            "minis-migracao",
+                            f"cliente_{usuario_cliente.get('id')}_{manual_nome}"
+                        ) if manual_foto is not None else ""
+
+                        cadastrar_mini(
+                            usuario_cliente.get("id"),
+                            manual_nome,
+                            manual_marca,
+                            manual_serie,
+                            manual_ano,
+                            manual_raridade,
+                            float(manual_valor_pago or 0),
+                            float(manual_valor_estimado or manual_valor_pago or 0),
+                            manual_foto_url,
+                            manual_status,
+                            "manual_migracao",
+                            manual_obs or "Origem: manual / migração",
+                            manual_data_pagamento
+                        )
+                        st.success("Mini manual/migração incluída na garagem do cliente. Não alterou estoque da Loja.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao incluir mini manual na garagem: {e}")
+
     minis_cliente = buscar_minis(usuario_cliente.get("id"))
 
     if not minis_cliente:
-        st.info("Este cliente ainda não possui minis cadastrados. Use o bloco acima para inserir uma mini da Loja nesta garagem.")
+        st.info("Este cliente ainda não possui minis cadastrados. Use o bloco da Loja ou o bloco Manual/Migração acima para inserir minis nesta garagem.")
         return
 
     busca_admin = st.text_input(
@@ -2146,8 +2245,10 @@ def render_admin_garagem_cliente(usuario_cliente):
         tipo_atual = limpar_campo_visual(mini.get("tipo_mini"), "compra")
         destaque_atual = limpar_campo_visual(mini.get("destaque_cliente"), "")
         foto_atual = get_foto_item(mini)
+        origem_atual = origem_operacional_mini(mini)
+        origem_label = "Manual/Migração" if origem_atual == "manual" else "Loja/Protegida"
 
-        with st.expander(f"🚗 {nome_atual} — {money(mini.get('valor_estimado') or 0)}", expanded=False):
+        with st.expander(f"🚗 {nome_atual} — {money(mini.get('valor_estimado') or 0)} — {origem_label}", expanded=False):
             col_foto, col_form = st.columns([0.9, 2.1])
 
             with col_foto:
@@ -2194,7 +2295,7 @@ def render_admin_garagem_cliente(usuario_cliente):
                         key=f"admin_data_pagamento_mini_{mini_id}"
                     )
 
-                opcoes_tipo = ["compra", "scanner", "presente", "troca", "colecao"]
+                opcoes_tipo = ["loja", "manual_migracao", "compra", "scanner", "presente", "troca", "colecao", "pre_venda"]
                 idx_tipo = opcoes_tipo.index(tipo_atual.lower()) if tipo_atual.lower() in opcoes_tipo else 0
                 novo_tipo = st.selectbox("Tipo da mini", opcoes_tipo, index=idx_tipo, key=f"admin_tipo_mini_{mini_id}")
 
@@ -2230,17 +2331,21 @@ def render_admin_garagem_cliente(usuario_cliente):
                             st.error(f"Erro ao atualizar mini: {e}")
 
                 with b2:
-                    confirmar_excluir = st.checkbox("Confirmar exclusão", key=f"admin_confirmar_excluir_mini_{mini_id}")
-                    if st.button("🗑️ Excluir mini", use_container_width=True, key=f"admin_excluir_mini_{mini_id}"):
-                        if not confirmar_excluir:
-                            st.warning("Marque confirmar exclusão antes de apagar.")
-                        else:
-                            try:
-                                excluir_mini(mini_id)
-                                st.success("Mini excluída com sucesso.")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Erro ao excluir mini: {e}")
+                    if pode_excluir_mini_pela_garagem(mini):
+                        st.info("Origem manual/migração: esta mini pode ser excluída por aqui.")
+                        confirmar_excluir = st.checkbox("Confirmar exclusão", key=f"admin_confirmar_excluir_mini_{mini_id}")
+                        if st.button("🗑️ Excluir mini manual", use_container_width=True, key=f"admin_excluir_mini_{mini_id}"):
+                            if not confirmar_excluir:
+                                st.warning("Marque confirmar exclusão antes de apagar.")
+                            else:
+                                try:
+                                    excluir_mini(mini_id)
+                                    st.success("Mini manual/migração excluída da garagem do cliente.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Erro ao excluir mini: {e}")
+                    else:
+                        st.warning("Mini com origem Loja/compra/pré-venda: exclusão bloqueada nesta garagem. Remova/controle pela Loja/Admin da Loja para proteger estoque e histórico.")
 
 
 # =========================

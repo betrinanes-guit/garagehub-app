@@ -6,7 +6,7 @@ import hashlib
 import random
 import time
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -115,6 +115,80 @@ def ativar_mobile_pwa():
         margin: 0;
         color: #cbd5e1;
         font-weight: 800;
+    }
+
+
+    /* =========================
+       ALERTAS FINANCEIROS ADMIN
+       ========================= */
+    .alerta-financeiro-wrap {
+        margin: 14px 0 22px;
+    }
+    .alerta-financeiro-hero {
+        background: linear-gradient(145deg, rgba(15,23,42,.95), rgba(2,6,23,.98));
+        border: 1px solid rgba(250,204,21,.26);
+        border-radius: 24px;
+        padding: 18px;
+        box-shadow: 0 18px 44px rgba(0,0,0,.28);
+    }
+    .alerta-financeiro-hero h3 {
+        margin: 0 0 6px;
+        color: #f8fafc;
+        font-size: 22px;
+    }
+    .alerta-financeiro-hero p {
+        margin: 0;
+        color: #cbd5e1;
+        font-weight: 800;
+    }
+    .alerta-financeiro-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+        margin-top: 14px;
+    }
+    .alerta-pagamento-amarelo,
+    .alerta-pagamento-vermelho {
+        border-radius: 22px;
+        padding: 16px;
+        box-shadow: 0 18px 38px rgba(0,0,0,.28);
+    }
+    .alerta-pagamento-amarelo {
+        background: repeating-linear-gradient(
+            45deg,
+            rgba(250, 204, 21, .28),
+            rgba(250, 204, 21, .28) 10px,
+            rgba(113, 63, 18, .18) 10px,
+            rgba(113, 63, 18, .18) 20px
+        );
+        border: 2px solid #facc15;
+        color: #fef9c3;
+    }
+    .alerta-pagamento-vermelho {
+        background: repeating-linear-gradient(
+            45deg,
+            rgba(239, 68, 68, .32),
+            rgba(239, 68, 68, .32) 10px,
+            rgba(127, 29, 29, .25) 10px,
+            rgba(127, 29, 29, .25) 20px
+        );
+        border: 2px solid #ef4444;
+        color: #fee2e2;
+    }
+    .alerta-pagamento-amarelo h4,
+    .alerta-pagamento-vermelho h4 {
+        margin: 0 0 8px;
+        font-size: 18px;
+        color: inherit;
+    }
+    .alerta-pagamento-amarelo p,
+    .alerta-pagamento-vermelho p {
+        margin: 4px 0;
+        font-weight: 850;
+        color: inherit;
+    }
+    @media (max-width: 900px) {
+        .alerta-financeiro-grid { grid-template-columns: 1fr; }
     }
     </style>
     """, unsafe_allow_html=True)
@@ -670,6 +744,142 @@ def qtd_pendente_pagamento(minis):
     return len([m for m in (minis or []) if is_pendente_pagamento(m)])
 
 
+
+def normalizar_data_pagamento_prevista(valor):
+    """Converte data prevista de pagamento para date, aceitando date/datetime/texto."""
+    if not valor:
+        return None
+
+    if isinstance(valor, datetime):
+        return valor.date()
+
+    if isinstance(valor, date):
+        return valor
+
+    texto = str(valor).strip()
+    if not texto or texto.lower() in ["none", "null", "nan"]:
+        return None
+
+    try:
+        return datetime.fromisoformat(texto[:10]).date()
+    except Exception:
+        pass
+
+    for formato in ["%d/%m/%Y", "%Y-%m-%d"]:
+        try:
+            return datetime.strptime(texto[:10], formato).date()
+        except Exception:
+            pass
+
+    return None
+
+
+def classificar_alerta_pagamento(data_prevista, status_pagamento):
+    """Retorna vencido, vence_hoje, vence_amanha, futuro ou vazio. Não altera banco."""
+    status = str(status_pagamento or "").strip().lower()
+    if status in ["pago", "concluido", "cancelado", "incluido_na_garagem"]:
+        return ""
+
+    data_venc = normalizar_data_pagamento_prevista(data_prevista)
+    if not data_venc:
+        return ""
+
+    hoje = date.today()
+    if data_venc < hoje:
+        return "vencido"
+    if data_venc == hoje:
+        return "vence_hoje"
+    if data_venc == hoje + timedelta(days=1):
+        return "vence_amanha"
+    return "futuro"
+
+
+def formatar_data_br(valor):
+    data_venc = normalizar_data_pagamento_prevista(valor)
+    return data_venc.strftime("%d/%m/%Y") if data_venc else "-"
+
+
+def montar_alertas_financeiros_admin(minis, clientes):
+    """Monta alertas de leitura para o admin com base em data_pagamento_prevista da tabela minis."""
+    clientes_por_id = {str(c.get("id")): c for c in (clientes or [])}
+    alertas = []
+
+    for mini in minis or []:
+        tipo_alerta = classificar_alerta_pagamento(
+            mini.get("data_pagamento_prevista"),
+            mini.get("status_pagamento")
+        )
+        if tipo_alerta not in ["vencido", "vence_hoje", "vence_amanha"]:
+            continue
+
+        cliente = clientes_por_id.get(str(mini.get("usuario_id")), {})
+        data_venc = normalizar_data_pagamento_prevista(mini.get("data_pagamento_prevista"))
+        dias_atraso = 0
+        if data_venc and tipo_alerta == "vencido":
+            dias_atraso = max(0, (date.today() - data_venc).days)
+
+        alertas.append({
+            "tipo": tipo_alerta,
+            "cliente": cliente,
+            "mini": mini,
+            "data": data_venc,
+            "dias_atraso": dias_atraso,
+        })
+
+    return sorted(alertas, key=lambda a: (a.get("data") or date.max, str(a.get("cliente", {}).get("nome") or "")))
+
+
+def render_alertas_financeiros_admin(minis, clientes, limite=12):
+    alertas = montar_alertas_financeiros_admin(minis, clientes)
+    vencidos = [a for a in alertas if a["tipo"] == "vencido"]
+    vence_hoje = [a for a in alertas if a["tipo"] == "vence_hoje"]
+    vence_amanha = [a for a in alertas if a["tipo"] == "vence_amanha"]
+
+    total_urgentes = len(vencidos) + len(vence_hoje) + len(vence_amanha)
+
+    st.markdown(f"""
+    <div class="alerta-financeiro-wrap">
+        <div class="alerta-financeiro-hero">
+            <h3>🔔 Alertas financeiros do admin</h3>
+            <p>Somente o admin visualiza. Leitura automática de pagamentos pré-datados: {len(vence_amanha)} vence(m) amanhã, {len(vence_hoje)} vence(m) hoje e {len(vencidos)} vencido(s).</p>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if total_urgentes == 0:
+        st.info("Nenhum pagamento pré-datado vencendo amanhã, hoje ou vencido.")
+        return
+
+    cards = []
+    for alerta in (vencidos + vence_hoje + vence_amanha)[:limite]:
+        mini = alerta.get("mini") or {}
+        cliente = alerta.get("cliente") or {}
+        tipo = alerta.get("tipo")
+        classe = "alerta-pagamento-vermelho" if tipo == "vencido" else "alerta-pagamento-amarelo"
+        if tipo == "vencido":
+            titulo = "🚨 Pagamento vencido"
+            extra = f"{alerta.get('dias_atraso', 0)} dia(s) em atraso"
+        elif tipo == "vence_hoje":
+            titulo = "⚠️ Pagamento vence hoje"
+            extra = "vence hoje"
+        else:
+            titulo = "⚠️ Pagamento vence amanhã"
+            extra = "vence amanhã"
+
+        cards.append(f"""
+        <div class="{classe}">
+            <h4>{html.escape(titulo)}</h4>
+            <p><b>Cliente:</b> {html.escape(str(cliente.get('nome') or 'Cliente não identificado'))}</p>
+            <p><b>Mini:</b> {html.escape(str(mini.get('nome') or 'Mini'))}</p>
+            <p><b>Valor:</b> {money(mini.get('valor_pago') or 0)} • <b>Vencimento:</b> {formatar_data_br(mini.get('data_pagamento_prevista'))}</p>
+            <p><b>Status atual:</b> {html.escape(str(mini.get('status_pagamento') or 'pendente'))} • {html.escape(extra)}</p>
+        </div>
+        """)
+
+    st.markdown('<div class="alerta-financeiro-grid">' + ''.join(cards) + '</div>', unsafe_allow_html=True)
+
+
+
 def buscar_minis(usuario_id):
     return (
         supabase.table("minis")
@@ -682,7 +892,7 @@ def buscar_minis(usuario_id):
 
 
 def cadastrar_mini(usuario_id, nome, marca, serie, ano, raridade, valor_pago, valor_estimado, foto_url,
-                   status_pagamento="pendente", tipo_mini="compra", destaque_cliente=""):
+                   status_pagamento="pendente", tipo_mini="compra", destaque_cliente="", data_pagamento_prevista=None):
     dados = {
         "usuario_id": usuario_id,
         "nome": nome,
@@ -695,7 +905,8 @@ def cadastrar_mini(usuario_id, nome, marca, serie, ano, raridade, valor_pago, va
         "foto_url": foto_url or "",
         "status_pagamento": status_pagamento or "pendente",
         "tipo_mini": tipo_mini or "compra",
-        "destaque_cliente": destaque_cliente or ""
+        "destaque_cliente": destaque_cliente or "",
+        "data_pagamento_prevista": str(data_pagamento_prevista) if data_pagamento_prevista else None
     }
 
     try:
@@ -705,6 +916,7 @@ def cadastrar_mini(usuario_id, nome, marca, serie, ano, raridade, valor_pago, va
         dados.pop("status_pagamento", None)
         dados.pop("tipo_mini", None)
         dados.pop("destaque_cliente", None)
+        dados.pop("data_pagamento_prevista", None)
         supabase.table("minis").insert(dados).execute()
 
 
@@ -1843,10 +2055,19 @@ def render_admin_garagem_cliente(usuario_cliente):
 
             status_lancamento = st.selectbox(
                 "Status de pagamento para lançar na garagem",
-                ["pago", "pendente", "reservado"],
+                ["pago", "pendente", "reservado", "pre_datado"],
                 index=0,
                 key=f"admin_status_lancar_loja_cliente_{usuario_cliente.get('id')}"
             )
+
+            data_pagamento_lancamento = None
+            if status_lancamento in ["pendente", "reservado", "pre_datado"]:
+                data_pagamento_lancamento = st.date_input(
+                    "Data prevista de pagamento (opcional)",
+                    value=None,
+                    format="DD/MM/YYYY",
+                    key=f"admin_data_pagamento_lancar_loja_cliente_{usuario_cliente.get('id')}"
+                )
 
             observacao_lancamento = st.text_input(
                 "Observação opcional",
@@ -1882,7 +2103,8 @@ def render_admin_garagem_cliente(usuario_cliente):
                                 item_atualizado.get("foto_url") or "",
                                 status_lancamento,
                                 "compra",
-                                observacao_lancamento or "Lançado manualmente pelo admin a partir da Loja"
+                                observacao_lancamento or "Lançado manualmente pelo admin a partir da Loja",
+                                data_pagamento_lancamento
                             )
 
                         novo_estoque = baixar_estoque_loja_item(item_atualizado, quantidade_lancamento)
@@ -1964,6 +2186,13 @@ def render_admin_garagem_cliente(usuario_cliente):
                     opcoes_status = ["pendente", "pago", "reservado", "cancelado"]
                     idx_status = opcoes_status.index(status_atual.lower()) if status_atual.lower() in opcoes_status else 0
                     novo_status = st.selectbox("Status pagamento", opcoes_status, index=idx_status, key=f"admin_status_mini_{mini_id}")
+                    data_atual_pagamento = normalizar_data_pagamento_prevista(mini.get("data_pagamento_prevista"))
+                    nova_data_pagamento = st.date_input(
+                        "Data prevista de pagamento (opcional)",
+                        value=data_atual_pagamento,
+                        format="DD/MM/YYYY",
+                        key=f"admin_data_pagamento_mini_{mini_id}"
+                    )
 
                 opcoes_tipo = ["compra", "scanner", "presente", "troca", "colecao"]
                 idx_tipo = opcoes_tipo.index(tipo_atual.lower()) if tipo_atual.lower() in opcoes_tipo else 0
@@ -1985,7 +2214,8 @@ def render_admin_garagem_cliente(usuario_cliente):
                             "valor_estimado": float(novo_valor_estimado or 0),
                             "status_pagamento": novo_status,
                             "tipo_mini": novo_tipo,
-                            "destaque_cliente": novo_destaque
+                            "destaque_cliente": novo_destaque,
+                            "data_pagamento_prevista": str(nova_data_pagamento) if nova_data_pagamento else None
                         }
 
                         if nova_foto is not None:
@@ -4856,11 +5086,14 @@ Regras obrigatórias:
         if clientes_scanner:
             mapa_clientes = {f"{c.get('nome','')} — {c.get('email','')}": c for c in clientes_scanner}
             cliente_label = st.selectbox("Cliente para lançar na garagem", list(mapa_clientes.keys()), key="scanner_ai_cliente_garagem")
-            status_lancar = st.selectbox("Status pagamento", ["pago", "pendente", "reservado"], key="scanner_ai_status_lancar")
+            status_lancar = st.selectbox("Status pagamento", ["pago", "pendente", "reservado", "pre_datado"], key="scanner_ai_status_lancar")
+            data_pagamento_scanner = None
+            if status_lancar in ["pendente", "reservado", "pre_datado"]:
+                data_pagamento_scanner = st.date_input("Data prevista de pagamento (opcional)", value=None, format="DD/MM/YYYY", key="scanner_ai_data_pagamento_lancar")
             if st.button("🏎️ Lançar na garagem do cliente", key="scanner_ai_lancar_garagem", use_container_width=True):
                 foto_url = upload_storage_loja(foto_para_salvar, s_nome) if foto_para_salvar is not None else ""
                 cliente_sel = mapa_clientes[cliente_label]
-                cadastrar_mini(cliente_sel["id"], s_nome, s_marca, s_serie, s_ano, s_raridade, float(s_valor_pago or 0), float(s_estimado or 0), foto_url, status_lancar, "scanner/admin", s_destaque)
+                cadastrar_mini(cliente_sel["id"], s_nome, s_marca, s_serie, s_ano, s_raridade, float(s_valor_pago or 0), float(s_estimado or 0), foto_url, status_lancar, "scanner/admin", s_destaque, data_pagamento_scanner)
                 try:
                     supabase.table("scanner_logs").insert({
                         "usuario_id": cliente_sel.get("id"),
@@ -6235,6 +6468,8 @@ else:
         </div>
         """, unsafe_allow_html=True)
 
+        render_alertas_financeiros_admin(todas_minis, clientes)
+
         aba_clientes, aba_loja, aba_pre_venda_admin, aba_pedidos, aba_minis, aba_financeiro, aba_hall_admin, aba_ranking_admin, aba_timeline_admin, aba_sorteios_admin, aba_lab_admin, aba_exec_admin, aba_checkout_admin, aba_notif_admin = st.tabs([
             "👥 Clientes",
             "🛒 Loja",
@@ -6739,7 +6974,10 @@ else:
                             raridade_mini = st.selectbox("Raridade", ["Comum", "TH", "STH", "Premium", "RLC", "Chase", "Especial"], key="adm_mini_raridade")
                             valor_pago_mini = st.number_input("Valor pago", min_value=0.0, step=1.0, key="adm_mini_valor_pago")
                             valor_estimado_mini = st.number_input("Valor estimado", min_value=0.0, step=1.0, key="adm_mini_valor_estimado")
-                            status_pagamento = st.selectbox("Status pagamento", ["pendente", "pago", "reservado", "cancelado"], key="adm_status_pagamento")
+                            status_pagamento = st.selectbox("Status pagamento", ["pendente", "pago", "reservado", "pre_datado", "cancelado"], key="adm_status_pagamento")
+                            data_pagamento_prevista = None
+                            if status_pagamento in ["pendente", "reservado", "pre_datado"]:
+                                data_pagamento_prevista = st.date_input("Data prevista de pagamento (opcional)", value=None, format="DD/MM/YYYY", key="adm_data_pagamento_prevista")
                             tipo_mini = st.selectbox("Tipo", ["compra", "presente", "premio", "vip"], key="adm_tipo_mini")
                             destaque_cliente = st.selectbox("Destaque", ["", "Top comprador", "Top ganhador", "Cliente VIP"], key="adm_destaque_cliente")
 
@@ -6752,7 +6990,7 @@ else:
                                 cadastrar_mini(
                                     cliente_sel["id"], nome_mini, marca_mini, serie_mini, ano_mini, raridade_mini,
                                     valor_pago_mini, valor_estimado_mini, foto_url,
-                                    status_pagamento, tipo_mini, destaque_cliente
+                                    status_pagamento, tipo_mini, destaque_cliente, data_pagamento_prevista
                                 )
                                 st.success("Mini lançada na garagem do cliente.")
                                 st.rerun()
@@ -6844,6 +7082,12 @@ else:
                             sts = ["pendente", "pago", "reservado", "cancelado"]
                             atual_st = mini_edit.get("status_pagamento") or "pendente"
                             e_status = st.selectbox("Status pagamento", sts, index=sts.index(atual_st) if atual_st in sts else 0, key=f"adm_e_status_{mini_edit['id']}")
+                            e_data_pagamento = st.date_input(
+                                "Data prevista de pagamento (opcional)",
+                                value=normalizar_data_pagamento_prevista(mini_edit.get("data_pagamento_prevista")),
+                                format="DD/MM/YYYY",
+                                key=f"adm_e_data_pagamento_{mini_edit['id']}"
+                            )
 
                             tipos = ["compra", "presente", "premio", "vip"]
                             atual_tipo = mini_edit.get("tipo_mini") or "compra"
@@ -6877,6 +7121,7 @@ else:
                                 "status_pagamento": e_status,
                                 "tipo_mini": e_tipo,
                                 "destaque_cliente": e_destaque,
+                                "data_pagamento_prevista": str(e_data_pagamento) if e_data_pagamento else None,
                             }
 
                             try:
@@ -6885,6 +7130,7 @@ else:
                                 dados.pop("status_pagamento", None)
                                 dados.pop("tipo_mini", None)
                                 dados.pop("destaque_cliente", None)
+                                dados.pop("data_pagamento_prevista", None)
                                 atualizar_mini(mini_edit["id"], dados)
 
                             st.success("Mini atualizada com sucesso.")

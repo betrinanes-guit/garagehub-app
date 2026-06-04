@@ -1048,6 +1048,57 @@ def resumo_pre_venda_mini_garagem(mini):
     }
 
 
+
+def limpar_destaque_pre_venda_visual(valor):
+    """Remove metadados técnicos da pré-venda da tela, mantendo o Reserva_ID preservado no banco."""
+    if isinstance(valor, dict):
+        texto = str(valor.get("destaque_cliente") or "")
+    else:
+        texto = str(valor or "")
+
+    if not texto.strip():
+        return "Pré-venda GarageHub"
+
+    partes = [p.strip() for p in texto.split("|") if p.strip()]
+    partes_visiveis = []
+
+    for parte in partes:
+        p_lower = parte.lower()
+        if re.match(r"^reserva[_\s-]*id\s*[:=]", parte, flags=re.IGNORECASE):
+            continue
+        if p_lower.startswith("quantidade solicitada"):
+            continue
+        if p_lower.startswith("valor unitário") or p_lower.startswith("valor unitario"):
+            continue
+        if p_lower.startswith("valor total da reserva"):
+            continue
+        partes_visiveis.append(parte)
+
+    texto_limpo = " | ".join(partes_visiveis).strip()
+    if not texto_limpo:
+        texto_limpo = "Pré-venda GarageHub"
+
+    return texto_limpo
+
+
+def preservar_reserva_id_no_destaque(destaque_original, destaque_editado):
+    """Preserva o Reserva_ID mesmo que o admin edite a observação limpa na tela."""
+    reserva_id = extrair_reserva_id_destaque(destaque_original)
+    destaque_editado = str(destaque_editado or "").strip()
+
+    if not reserva_id:
+        return destaque_editado
+
+    if extrair_reserva_id_destaque(destaque_editado):
+        return destaque_editado
+
+    if destaque_editado:
+        return f"{destaque_editado} | Reserva_ID: {reserva_id}"
+
+    return f"Pré-venda GarageHub | Reserva_ID: {reserva_id}"
+
+
+
 def cancelar_pre_venda_mini_garagem(mini):
     """
     Permite ao admin remover uma mini de pré-venda da garagem.
@@ -2487,7 +2538,8 @@ def render_admin_garagem_cliente(usuario_cliente):
                 idx_tipo = opcoes_tipo.index(tipo_atual.lower()) if tipo_atual.lower() in opcoes_tipo else 0
                 novo_tipo = st.selectbox("Tipo da mini", opcoes_tipo, index=idx_tipo, key=f"admin_tipo_mini_{mini_id}")
 
-                novo_destaque = st.text_area("Destaque / observação", value=destaque_atual, key=f"admin_destaque_mini_{mini_id}")
+                destaque_visual = limpar_destaque_pre_venda_visual(mini) if is_mini_pre_venda(mini) else destaque_atual
+                novo_destaque = st.text_area("Destaque / observação", value=destaque_visual, key=f"admin_destaque_mini_{mini_id}")
 
                 if is_mini_pre_venda(mini):
                     resumo_pv = resumo_pre_venda_mini_garagem(mini)
@@ -2496,6 +2548,8 @@ def render_admin_garagem_cliente(usuario_cliente):
                         <div class="user-info-item"><small>Qtd. solicitada pelo cliente</small><strong>{int(resumo_pv.get('quantidade') or 1)}</strong></div>
                         <div class="user-info-item"><small>Valor unitário</small><strong>{money(resumo_pv.get('valor_unitario') or 0)}</strong></div>
                         <div class="user-info-item"><small>Total da pré-venda</small><strong>{money(resumo_pv.get('valor_total') or 0)}</strong></div>
+                        <div class="user-info-item"><small>Sinal recebido</small><strong>{money(resumo_pv.get('valor_sinal') or 0)}</strong></div>
+                        <div class="user-info-item"><small>Restante</small><strong>{money(resumo_pv.get('valor_restante') or 0)}</strong></div>
                         <div class="user-info-item"><small>Status da reserva</small><strong>{html.escape(texto_status_reserva(resumo_pv.get('status_reserva') or ''))}</strong></div>
                     </div>
                     """, unsafe_allow_html=True)
@@ -2514,7 +2568,7 @@ def render_admin_garagem_cliente(usuario_cliente):
                             "valor_estimado": float(novo_valor_estimado or 0),
                             "status_pagamento": novo_status,
                             "tipo_mini": novo_tipo,
-                            "destaque_cliente": novo_destaque,
+                            "destaque_cliente": preservar_reserva_id_no_destaque(destaque_atual, novo_destaque) if is_mini_pre_venda(mini) else novo_destaque,
                             "data_pagamento_prevista": str(nova_data_pagamento) if nova_data_pagamento else None
                         }
 
@@ -8169,6 +8223,9 @@ else:
                                 status_pagamento = limpar_campo_visual(mini.get("status_pagamento"), "pendente").upper()
                                 tipo_mini = limpar_campo_visual(mini.get("tipo_mini"), "compra").upper()
                                 destaque_cliente = limpar_campo_visual(mini.get("destaque_cliente"), "")
+                                resumo_pv_cliente = resumo_pre_venda_mini_garagem(mini) if is_mini_pre_venda(mini) else None
+                                if resumo_pv_cliente:
+                                    destaque_cliente = limpar_destaque_pre_venda_visual(mini)
                                 valor_pago = float(mini.get("valor_pago") or 0)
                                 valor_estimado = float(mini.get("valor_estimado") or 0)
                                 valorizacao = valor_estimado - valor_pago
@@ -8207,6 +8264,17 @@ else:
                                         badge_html += f'<span class="badge-destaque">{html.escape(destaque_cliente)}</span>'
 
                                     st.markdown(badge_html, unsafe_allow_html=True)
+
+                                    if resumo_pv_cliente:
+                                        st.markdown(f"""
+                                        <div class="user-info-grid" style="margin-top:14px;">
+                                            <div class="user-info-item"><small>Qtd. solicitada</small><strong>{int(resumo_pv_cliente.get('quantidade') or 1)}</strong></div>
+                                            <div class="user-info-item"><small>Total da reserva</small><strong>{money(resumo_pv_cliente.get('valor_total') or 0)}</strong></div>
+                                            <div class="user-info-item"><small>Sinal pago</small><strong>{money(resumo_pv_cliente.get('valor_sinal') or 0)}</strong></div>
+                                            <div class="user-info-item"><small>Restante</small><strong>{money(resumo_pv_cliente.get('valor_restante') or 0)}</strong></div>
+                                            <div class="user-info-item"><small>Status</small><strong>{html.escape(texto_status_reserva(resumo_pv_cliente.get('status_reserva') or ''))}</strong></div>
+                                        </div>
+                                        """, unsafe_allow_html=True)
 
                                     st.markdown(f"**Marca:** {html.escape(marca)}")
                                     st.markdown(f"**Série:** {html.escape(serie)}")

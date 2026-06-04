@@ -955,6 +955,121 @@ def pode_excluir_mini_pela_garagem(mini):
     return origem_operacional_mini(mini) == "manual"
 
 
+def is_mini_pre_venda(mini):
+    """Identifica minis lançadas na garagem a partir do módulo de pré-venda."""
+    tipo = str((mini or {}).get("tipo_mini") or "").strip().lower()
+    destaque = str((mini or {}).get("destaque_cliente") or "").strip().lower()
+    return tipo == "pre_venda" or "pré-venda" in destaque or "pre-venda" in destaque
+
+
+def extrair_reserva_id_destaque(destaque):
+    """Lê o ID da reserva gravado no destaque, quando existir."""
+    texto = str(destaque or "")
+    padroes = [
+        r"reserva[_\s-]*id\s*[:=]\s*([0-9a-fA-F-]+)",
+        r"reserva\s+pré-venda\s*[:=]\s*([0-9a-fA-F-]+)",
+        r"reserva\s+pre-venda\s*[:=]\s*([0-9a-fA-F-]+)",
+    ]
+    for padrao in padroes:
+        m = re.search(padrao, texto, flags=re.IGNORECASE)
+        if m:
+            return m.group(1)
+    return None
+
+
+def buscar_reserva_pre_venda_por_id(reserva_id):
+    if not reserva_id:
+        return None
+    try:
+        resp = supabase.table("pre_venda_reservas").select("*").eq("id", reserva_id).execute()
+        return resp.data[0] if resp.data else None
+    except Exception:
+        return None
+
+
+def localizar_reserva_pre_venda_da_mini(mini):
+    """
+    Tenta localizar a reserva que originou uma mini de pré-venda na garagem.
+    Primeiro usa o ID gravado no destaque. Para registros antigos, faz fallback por cliente + nome da pré-venda.
+    """
+    if not mini or not is_mini_pre_venda(mini):
+        return None, None
+
+    reserva_id = extrair_reserva_id_destaque(mini.get("destaque_cliente"))
+    reserva = buscar_reserva_pre_venda_por_id(reserva_id) if reserva_id else None
+
+    if reserva:
+        pre_venda = buscar_pre_venda_por_id(reserva.get("pre_venda_id")) or {}
+        return reserva, pre_venda
+
+    try:
+        reservas = buscar_reservas_pre_venda(cliente_id=mini.get("usuario_id"))
+        nome_mini = str(mini.get("nome") or "").strip().lower()
+
+        for r in reservas:
+            pv = buscar_pre_venda_por_id(r.get("pre_venda_id")) or {}
+            if str(pv.get("nome") or "").strip().lower() == nome_mini:
+                return r, pv
+    except Exception:
+        pass
+
+    return None, None
+
+
+def resumo_pre_venda_mini_garagem(mini):
+    """Retorna quantidade/valores da reserva de pré-venda para exibir ao admin."""
+    reserva, pre_venda = localizar_reserva_pre_venda_da_mini(mini)
+
+    if reserva:
+        qtd = int(reserva.get("quantidade") or 1)
+        valor_total = float(reserva.get("valor_total") or 0)
+        valor_unitario = valor_total / qtd if qtd else float(pre_venda.get("valor_total") or mini.get("valor_pago") or 0)
+        return {
+            "reserva": reserva,
+            "pre_venda": pre_venda or {},
+            "quantidade": qtd,
+            "valor_unitario": valor_unitario,
+            "valor_total": valor_total,
+            "valor_sinal": float(reserva.get("valor_sinal") or 0),
+            "valor_restante": float(reserva.get("valor_restante") or 0),
+            "status_reserva": str(reserva.get("status") or ""),
+        }
+
+    # Fallback para registros antigos sem vínculo com reserva.
+    return {
+        "reserva": None,
+        "pre_venda": {},
+        "quantidade": 1,
+        "valor_unitario": float(mini.get("valor_pago") or mini.get("valor_estimado") or 0),
+        "valor_total": float(mini.get("valor_pago") or mini.get("valor_estimado") or 0),
+        "valor_sinal": 0.0,
+        "valor_restante": 0.0,
+        "status_reserva": "não localizada",
+    }
+
+
+def cancelar_pre_venda_mini_garagem(mini):
+    """
+    Permite ao admin remover uma mini de pré-venda da garagem.
+    Quando encontra a reserva vinculada, marca a reserva como cancelada para liberar histórico/controle.
+    """
+    if not mini or not is_mini_pre_venda(mini):
+        return False, "Esta mini não foi identificada como pré-venda."
+
+    reserva, pre_venda = localizar_reserva_pre_venda_da_mini(mini)
+
+    try:
+        if reserva:
+            atualizar_reserva_pre_venda(reserva.get("id"), {"status": "cancelado"})
+            if pre_venda and str(pre_venda.get("status") or "").lower() == "esgotada" and quantidade_restante_pre_venda(pre_venda) > 0:
+                atualizar_pre_venda(pre_venda.get("id"), {"status": "ativa"})
+
+        excluir_mini(mini.get("id"))
+        return True, "Pré-venda removida da garagem e reserva marcada como cancelada." if reserva else "Pré-venda removida da garagem. Reserva original não localizada."
+    except Exception as e:
+        return False, f"Erro ao cancelar/remover pré-venda: {e}"
+
+
 def buscar_loja_minis(apenas_disponiveis=False):
     """Busca os itens da Loja com retentativa para erro intermitente de cache do Supabase/PostgREST.
 
@@ -1129,24 +1244,37 @@ def efetivar_reserva_pre_venda_na_garagem(reserva, pre_venda):
     if not cliente_id:
         return False, "Reserva sem cliente vinculado."
 
-    for _ in range(qtd):
-        cadastrar_mini(
-            cliente_id,
-            pre_venda.get("nome") or "Mini pré-venda",
-            pre_venda.get("marca") or "Hot Wheels",
-            pre_venda.get("serie") or "",
-            "",
-            "Comum",
-            float(pre_venda.get("valor_total") or 0),
-            float(pre_venda.get("valor_total") or 0),
-            pre_venda.get("foto_url") or "",
-            "pago",
-            "pre_venda",
-            "Incluído a partir de pré-venda GarageHub"
-        )
+    valor_total_reserva = float(reserva.get("valor_total") or 0)
+    valor_unitario = valor_total_reserva / qtd if qtd else float(pre_venda.get("valor_total") or 0)
+
+    destaque_pre_venda = (
+        "Incluído a partir de pré-venda GarageHub | "
+        f"Reserva_ID: {reserva.get('id')} | "
+        f"Quantidade solicitada: {qtd} | "
+        f"Valor unitário: {money(valor_unitario)} | "
+        f"Valor total da reserva: {money(valor_total_reserva)}"
+    )
+
+    # A partir desta versão a reserva entra como 1 registro na garagem,
+    # mantendo a quantidade solicitada no vínculo da pré-venda.
+    # Isso evita minis duplicadas e deixa o admin enxergar a quantidade real do pedido.
+    cadastrar_mini(
+        cliente_id,
+        pre_venda.get("nome") or "Mini pré-venda",
+        pre_venda.get("marca") or "Hot Wheels",
+        pre_venda.get("serie") or "",
+        "",
+        "Comum",
+        valor_unitario,
+        valor_total_reserva,
+        pre_venda.get("foto_url") or "",
+        "pago",
+        "pre_venda",
+        destaque_pre_venda
+    )
 
     atualizar_reserva_pre_venda(reserva.get("id"), {"status": "incluido_na_garagem"})
-    return True, f"{qtd} mini(s) incluída(s) na garagem do cliente."
+    return True, f"Reserva incluída na garagem: {qtd} unidade(s) registrada(s) no controle da pré-venda."
 
 
 def texto_status_pre_venda(status):
@@ -2301,6 +2429,17 @@ def render_admin_garagem_cliente(usuario_cliente):
 
                 novo_destaque = st.text_area("Destaque / observação", value=destaque_atual, key=f"admin_destaque_mini_{mini_id}")
 
+                if is_mini_pre_venda(mini):
+                    resumo_pv = resumo_pre_venda_mini_garagem(mini)
+                    st.markdown(f"""
+                    <div class="user-info-grid" style="margin-top:14px;">
+                        <div class="user-info-item"><small>Qtd. solicitada pelo cliente</small><strong>{int(resumo_pv.get('quantidade') or 1)}</strong></div>
+                        <div class="user-info-item"><small>Valor unitário</small><strong>{money(resumo_pv.get('valor_unitario') or 0)}</strong></div>
+                        <div class="user-info-item"><small>Total da pré-venda</small><strong>{money(resumo_pv.get('valor_total') or 0)}</strong></div>
+                        <div class="user-info-item"><small>Status da reserva</small><strong>{html.escape(texto_status_reserva(resumo_pv.get('status_reserva') or ''))}</strong></div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
                 b1, b2 = st.columns(2)
 
                 with b1:
@@ -2344,8 +2483,21 @@ def render_admin_garagem_cliente(usuario_cliente):
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"Erro ao excluir mini: {e}")
+                    elif is_mini_pre_venda(mini):
+                        st.warning("Pré-venda: o admin pode cancelar/remover esta mini da garagem, mantendo o histórico da reserva como cancelado.")
+                        confirmar_cancelar_pv = st.checkbox("Confirmar cancelamento/remoção da pré-venda", key=f"admin_confirmar_cancelar_pv_mini_{mini_id}")
+                        if st.button("🗑️ Cancelar/remover pré-venda", use_container_width=True, key=f"admin_cancelar_pv_mini_{mini_id}"):
+                            if not confirmar_cancelar_pv:
+                                st.warning("Marque confirmar cancelamento antes de remover.")
+                            else:
+                                ok, msg = cancelar_pre_venda_mini_garagem(mini)
+                                if ok:
+                                    st.success(msg)
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
                     else:
-                        st.warning("Mini com origem Loja/compra/pré-venda: exclusão bloqueada nesta garagem. Remova/controle pela Loja/Admin da Loja para proteger estoque e histórico.")
+                        st.warning("Mini com origem Loja/compra: exclusão bloqueada nesta garagem. Remova/controle pela Loja/Admin da Loja para proteger estoque e histórico.")
 
 
 # =========================

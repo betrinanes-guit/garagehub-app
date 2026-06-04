@@ -1465,6 +1465,65 @@ def render_pre_vendas_admin(clientes):
         </div>
         """, unsafe_allow_html=True)
 
+        # Edição financeira da reserva ANTES de efetivar na garagem.
+        # Permite ao admin ajustar sinal recebido quando o cliente paga valor diferente do sinal previsto.
+        editar_bloqueado = status_reserva in ["incluido_na_garagem", "cancelado"]
+        valor_total_atual = float(r.get("valor_total") or 0)
+        valor_sinal_atual = float(r.get("valor_sinal") or 0)
+
+        with st.expander("✏️ Editar valores da reserva", expanded=True):
+            ev1, ev2, ev3, ev4 = st.columns([1, 1, 1, 1])
+            with ev1:
+                novo_valor_total_txt = st.text_input(
+                    "Valor total da reserva",
+                    value=f"{valor_total_atual:.2f}".replace(".", ","),
+                    key=f"pv_edit_total_{r['id']}",
+                    disabled=editar_bloqueado,
+                    help="Valor total reservado pelo cliente. Ex: 260,00"
+                )
+            with ev2:
+                novo_sinal_txt = st.text_input(
+                    "Sinal recebido",
+                    value=f"{valor_sinal_atual:.2f}".replace(".", ","),
+                    key=f"pv_edit_sinal_{r['id']}",
+                    disabled=editar_bloqueado,
+                    help="Digite o valor realmente pago como sinal. Ex: 45,00"
+                )
+
+            def _valor_monetario_admin(txt, padrao=0.0):
+                try:
+                    t = str(txt or "").strip()
+                    t = t.replace("R$", "").replace(" ", "")
+                    if "," in t and "." in t:
+                        t = t.replace(".", "").replace(",", ".")
+                    else:
+                        t = t.replace(",", ".")
+                    return max(0.0, float(t or 0))
+                except Exception:
+                    return float(padrao or 0)
+
+            novo_valor_total = _valor_monetario_admin(novo_valor_total_txt, valor_total_atual)
+            novo_sinal = _valor_monetario_admin(novo_sinal_txt, valor_sinal_atual)
+            novo_restante = max(0.0, novo_valor_total - novo_sinal)
+
+            with ev3:
+                st.metric("Restante recalculado", money(novo_restante))
+            with ev4:
+                if st.button("💾 Salvar valores", key=f"pv_salvar_valores_{r['id']}", use_container_width=True, disabled=editar_bloqueado):
+                    if novo_sinal > novo_valor_total:
+                        st.error("O sinal recebido não pode ser maior que o valor total da reserva.")
+                    else:
+                        atualizar_reserva_pre_venda(r["id"], {
+                            "valor_total": float(novo_valor_total),
+                            "valor_sinal": float(novo_sinal),
+                            "valor_restante": float(novo_restante),
+                        })
+                        st.success("Valores da reserva atualizados.")
+                        st.rerun()
+
+            if editar_bloqueado:
+                st.caption("Reserva já incluída na garagem ou cancelada. Para alterar valores, faça antes de incluir/cancelar.")
+
         a1, a2, a3, a4, a5 = st.columns(5)
         with a1:
             if st.button("🟡 Sinal pago", key=f"pv_sinal_pago_{r['id']}", disabled=status_reserva in ["incluido_na_garagem", "cancelado"]):
@@ -1472,7 +1531,8 @@ def render_pre_vendas_admin(clientes):
                 st.rerun()
         with a2:
             if st.button("🟢 Pago total", key=f"pv_pago_total_{r['id']}", disabled=status_reserva in ["incluido_na_garagem", "cancelado"]):
-                atualizar_reserva_pre_venda(r["id"], {"status": "pago_total"})
+                # Ao marcar pago total, garante que o restante fique zerado.
+                atualizar_reserva_pre_venda(r["id"], {"status": "pago_total", "valor_sinal": float(r.get("valor_total") or 0), "valor_restante": 0.0})
                 st.rerun()
         with a3:
             if st.button("🚗 Incluir garagem", key=f"pv_incluir_garagem_{r['id']}", disabled=status_reserva not in ["sinal_pago", "pago_total"]):
@@ -1489,7 +1549,7 @@ def render_pre_vendas_admin(clientes):
                     atualizar_pre_venda(pv.get("id"), {"status": "ativa"})
                 st.rerun()
         with a5:
-            st.caption("Libera inclusão após sinal ou total.")
+            st.caption("Edite/salve o sinal antes de marcar sinal pago ou incluir na garagem.")
 
 
 def mensagem_status_reserva_cliente(status):

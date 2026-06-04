@@ -2487,7 +2487,12 @@ def render_admin_garagem_cliente(usuario_cliente):
         origem_atual = origem_operacional_mini(mini)
         origem_label = "Manual/Migração" if origem_atual == "manual" else "Loja/Protegida"
 
-        with st.expander(f"🚗 {nome_atual} — {money(mini.get('valor_estimado') or 0)} — {origem_label}", expanded=False):
+        # Título limpo do expander da garagem.
+        # Removi emoji/HTML do início para evitar quebra visual no Streamlit.
+        titulo_expander = f"{nome_atual} — {money(mini.get('valor_estimado') or 0)} — {origem_label}"
+        titulo_expander = re.sub(r"<[^>]*>", "", str(titulo_expander)).strip()
+
+        with st.expander(titulo_expander, expanded=False):
             col_foto, col_form = st.columns([0.9, 2.1])
 
             with col_foto:

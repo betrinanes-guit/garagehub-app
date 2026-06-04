@@ -799,6 +799,35 @@ def formatar_data_br(valor):
     return data_venc.strftime("%d/%m/%Y") if data_venc else "-"
 
 
+def formatar_data_input_br(valor):
+    """Formata a data para campo texto editável. Campo vazio permite remover a data."""
+    data_venc = normalizar_data_pagamento_prevista(valor)
+    return data_venc.strftime("%d/%m/%Y") if data_venc else ""
+
+
+def data_pagamento_para_banco(valor):
+    """Converte o campo editável de data para o Supabase. Vazio grava NULL."""
+    if valor is None:
+        return None
+
+    if isinstance(valor, datetime):
+        return valor.date().isoformat()
+
+    if isinstance(valor, date):
+        return valor.isoformat()
+
+    texto = str(valor).strip()
+
+    if not texto or texto.lower() in ["none", "null", "nan", "-", "dd/mm/yyyy"]:
+        return None
+
+    data_venc = normalizar_data_pagamento_prevista(texto)
+    if data_venc:
+        return data_venc.isoformat()
+
+    return None
+
+
 def montar_alertas_financeiros_admin(minis, clientes):
     """Monta alertas de leitura para o admin com base em data_pagamento_prevista da tabela minis."""
     clientes_por_id = {str(c.get("id")): c for c in (clientes or [])}
@@ -2532,11 +2561,12 @@ def render_admin_garagem_cliente(usuario_cliente):
                     idx_status = opcoes_status.index(status_atual.lower()) if status_atual.lower() in opcoes_status else 0
                     novo_status = st.selectbox("Status pagamento", opcoes_status, index=idx_status, key=f"admin_status_mini_{mini_id}")
                     data_atual_pagamento = normalizar_data_pagamento_prevista(mini.get("data_pagamento_prevista"))
-                    nova_data_pagamento = st.date_input(
+                    nova_data_pagamento = st.text_input(
                         "Data prevista de pagamento (opcional)",
-                        value=data_atual_pagamento,
-                        format="DD/MM/YYYY",
-                        key=f"admin_data_pagamento_mini_{mini_id}"
+                        value=formatar_data_input_br(data_atual_pagamento),
+                        placeholder="DD/MM/AAAA — deixe em branco para remover",
+                        key=f"admin_data_pagamento_mini_{mini_id}",
+                        help="Para retirar a data prevista, apague o campo e salve."
                     )
 
                 opcoes_tipo = ["loja", "manual_migracao", "compra", "scanner", "presente", "troca", "colecao", "pre_venda"]
@@ -2574,7 +2604,7 @@ def render_admin_garagem_cliente(usuario_cliente):
                             "status_pagamento": novo_status,
                             "tipo_mini": novo_tipo,
                             "destaque_cliente": preservar_reserva_id_no_destaque(destaque_atual, novo_destaque) if is_mini_pre_venda(mini) else novo_destaque,
-                            "data_pagamento_prevista": str(nova_data_pagamento) if nova_data_pagamento else None
+                            "data_pagamento_prevista": data_pagamento_para_banco(nova_data_pagamento)
                         }
 
                         if nova_foto is not None:
@@ -7458,11 +7488,12 @@ else:
                             sts = ["pendente", "pago", "reservado", "cancelado"]
                             atual_st = mini_edit.get("status_pagamento") or "pendente"
                             e_status = st.selectbox("Status pagamento", sts, index=sts.index(atual_st) if atual_st in sts else 0, key=f"adm_e_status_{mini_edit['id']}")
-                            e_data_pagamento = st.date_input(
+                            e_data_pagamento = st.text_input(
                                 "Data prevista de pagamento (opcional)",
-                                value=normalizar_data_pagamento_prevista(mini_edit.get("data_pagamento_prevista")),
-                                format="DD/MM/YYYY",
-                                key=f"adm_e_data_pagamento_{mini_edit['id']}"
+                                value=formatar_data_input_br(mini_edit.get("data_pagamento_prevista")),
+                                placeholder="DD/MM/AAAA — deixe em branco para remover",
+                                key=f"adm_e_data_pagamento_{mini_edit['id']}",
+                                help="Para retirar a data prevista, apague o campo e salve."
                             )
 
                             tipos = ["compra", "presente", "premio", "vip"]
@@ -7497,7 +7528,7 @@ else:
                                 "status_pagamento": e_status,
                                 "tipo_mini": e_tipo,
                                 "destaque_cliente": e_destaque,
-                                "data_pagamento_prevista": str(e_data_pagamento) if e_data_pagamento else None,
+                                "data_pagamento_prevista": data_pagamento_para_banco(e_data_pagamento),
                             }
 
                             try:

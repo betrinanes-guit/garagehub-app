@@ -5552,6 +5552,16 @@ create table if not exists rifa_numeros (
 
 create unique index if not exists idx_rifa_numero_unico
 on rifa_numeros (rifa_id, numero);
+
+create table if not exists rifa_cartela_nomes (
+    id uuid primary key default gen_random_uuid(),
+    rifa_id uuid not null,
+    nome_cartela text not null,
+    usuario_id text,
+    comprador_nome text,
+    status_pagamento text default 'disponivel',
+    criado_em timestamptz default now()
+);
     """.strip()
 
 
@@ -5561,6 +5571,7 @@ def modo_rifa_label(modo):
         "top_comprador": "💰 Top comprador",
         "top_ganhador": "👑 Top ganhador",
         "hibrida": "🔥 Híbrida",
+        "cartela_sorte": "🍀 Cartela da Sorte",
         "sorteio_top_comprador": "🔥 Híbrida",
         "sorteio_top_ganhador": "🔥 Híbrida",
         "somente_top_comprador": "💰 Top comprador",
@@ -5576,6 +5587,7 @@ def rifa_modo_descricao(modo):
         "top_comprador": "Não sorteia número. Premia quem comprou mais números nesta rifa.",
         "top_ganhador": "Não sorteia número. Premia quem mais venceu no histórico de rifas.",
         "hibrida": "Faz os 3 resultados: sorteio normal + Top comprador + Top ganhador histórico.",
+        "cartela_sorte": "Cartela visual de nomes: o admin preenche os nomes comprados e o sistema sorteia um nome da cartela quando estiver completa.",
         "sorteio_top_comprador": "Compatibilidade: tratado como rifa híbrida.",
         "sorteio_top_ganhador": "Compatibilidade: tratado como rifa híbrida.",
         "somente_top_comprador": "Compatibilidade: tratado como Top comprador.",
@@ -5608,6 +5620,10 @@ def atualizar_rifa(rifa_id, dados):
 def excluir_rifa(rifa_id):
     try:
         supabase.table("rifa_numeros").delete().eq("rifa_id", str(rifa_id)).execute()
+    except Exception:
+        pass
+    try:
+        supabase.table("rifa_cartela_nomes").delete().eq("rifa_id", str(rifa_id)).execute()
     except Exception:
         pass
     supabase.table("rifas").delete().eq("id", rifa_id).execute()
@@ -6012,13 +6028,640 @@ def render_grade_numeros_rifa(rifa, numeros, clientes_por_id):
     """, unsafe_allow_html=True)
 
 
+
+
+# =========================
+# CARTELA DA SORTE — MÓDULO ISOLADO DAS RIFAS NUMÉRICAS
+# =========================
+NOMES_CARTELA_SORTE_PADRAO = [
+    "REGINA", "DÉBORA", "TEREZA", "ÁUREA", "ELVIRA",
+    "ISABEL", "MARGARIDA", "ISAURA", "SELMA", "DULCE",
+    "ZORAIDE", "RAQUEL", "ADRIANA", "SIMONE", "LOURDES",
+    "DOLORES", "ROBERTA", "DIRCE", "NORMA", "DANIELA",
+    "ROSÁLIA", "JOELMA", "GLÓRIA", "FÁTIMA", "ZULEIKA",
+    "JUREMA", "MÔNICA", "HELENA", "EUGÊNIA", "ADELAIDE",
+    "DENISE", "JANDIRA", "ROSANA", "VALÉRIA", "CELESTE",
+    "OLINDA", "EMÍLIA", "JAQUELINE", "ADÉLIA", "PATRÍCIA",
+    "MIRIAM", "CLARICE", "AURORA", "LENICE", "SOLANGE",
+    "IVONE", "MÁRCIA", "DORA", "GRAZIELA", "MARIA",
+    "LUCAS", "JOÃO", "HUMBERTO", "MARCO", "NELSON",
+    "RODRIGO", "CARLOS", "ALEF", "MARCIO", "PAULO",
+    "RENATO", "FERNANDO", "DIEGO", "BRUNO", "GUSTAVO",
+    "RAFAEL", "EDUARDO", "FELIPE", "ANDRÉ", "LEONARDO",
+    "ALEX", "WILLIAM", "JULIO", "MATEUS", "CAIO",
+    "VINICIUS", "THIAGO", "RICARDO", "SÉRGIO", "AUGUSTO",
+    "LUIZ", "MIGUEL", "HENRIQUE", "GABRIEL", "DANILO",
+    "PEDRO", "SAMUEL", "VITOR", "IGOR", "OTÁVIO",
+    "CÉSAR", "WAGNER", "MAURÍCIO", "ROBERTO", "ANTONIO",
+    "FRANCISCO", "JOSÉ", "MARCOS", "ANDERSON", "DOUGLAS",
+]
+
+
+def is_rifa_cartela_sorte(rifa):
+    return str((rifa or {}).get("modo_premiacao") or "").strip().lower() == "cartela_sorte"
+
+
+def buscar_cartela_rifa(rifa_id):
+    try:
+        return (
+            supabase.table("rifa_cartela_nomes")
+            .select("*")
+            .eq("rifa_id", str(rifa_id))
+            .order("criado_em")
+            .execute()
+            .data or []
+        )
+    except Exception:
+        return []
+
+
+def gerar_nomes_cartela_sorte(qtd):
+    qtd = max(1, int(qtd or 50))
+    nomes = list(NOMES_CARTELA_SORTE_PADRAO)
+    if qtd <= len(nomes):
+        return nomes[:qtd]
+    while len(nomes) < qtd:
+        nomes.append(f"NOME {len(nomes) + 1:03d}")
+    return nomes[:qtd]
+
+
+def garantir_cartela_rifa(rifa):
+    """Cria as posições da Cartela da Sorte apenas se ainda não existirem."""
+    rifa_id = rifa.get("id")
+    cartela = buscar_cartela_rifa(rifa_id)
+    if cartela:
+        return cartela
+
+    qtd = int(rifa.get("qtd_numeros") or 50)
+    nomes = gerar_nomes_cartela_sorte(qtd)
+    linhas = [{
+        "rifa_id": str(rifa_id),
+        "nome_cartela": nome,
+        "usuario_id": None,
+        "comprador_nome": None,
+        "status_pagamento": "disponivel",
+    } for nome in nomes]
+
+    try:
+        supabase.table("rifa_cartela_nomes").insert(linhas).execute()
+    except Exception:
+        pass
+
+    return buscar_cartela_rifa(rifa_id)
+
+
+def atualizar_nome_cartela(nome_id, dados):
+    supabase.table("rifa_cartela_nomes").update(dados).eq("id", nome_id).execute()
+
+
+def liberar_nome_cartela(nome_id):
+    atualizar_nome_cartela(nome_id, {
+        "usuario_id": None,
+        "comprador_nome": None,
+        "status_pagamento": "disponivel",
+    })
+
+
+def nome_exibicao_cartela(item, clientes_por_id):
+    comprador = str(item.get("comprador_nome") or "").strip()
+    if comprador:
+        return comprador
+    uid = str(item.get("usuario_id") or "")
+    if uid:
+        return nome_cliente_por_id(clientes_por_id, uid)
+    return ""
+
+
+def render_grade_cartela_rifa(rifa, cartela, clientes_por_id):
+    cartela = cartela or []
+    qtd_total = len(cartela)
+    ocupados = len([c for c in cartela if str(c.get("usuario_id") or "").strip()])
+    disponiveis = max(qtd_total - ocupados, 0)
+    vencedor_nome = str(rifa.get("numero_sorteado") or "")
+    blocos = []
+
+    for idx, item in enumerate(cartela, start=1):
+        nome_base = str(item.get("nome_cartela") or f"NOME {idx}")
+        comprador = nome_exibicao_cartela(item, clientes_por_id)
+        status = str(item.get("status_pagamento") or "disponivel").lower()
+        eh_vencedor = vencedor_nome and vencedor_nome == str(item.get("id"))
+
+        if eh_vencedor:
+            classe = "rifa-num-vencedor"
+        elif not comprador:
+            classe = "rifa-num-disponivel"
+        elif status == "pago":
+            classe = "rifa-num-pago"
+        else:
+            classe = "rifa-num-pendente"
+
+        conteudo = f"<b>{html.escape(nome_base)}</b>"
+        if comprador:
+            conteudo += f"<small>{html.escape(comprador)}</small>"
+        else:
+            conteudo += "<small>Disponível</small>"
+
+        tooltip = f"{nome_base} — {status} — {comprador or 'disponível'}"
+        blocos.append(f'<div class="rifa-cartela-nome {classe}" title="{html.escape(tooltip, quote=True)}">{conteudo}</div>')
+
+    st.markdown(f"""
+    <style>
+    .rifa-cartela-grid {{ display:grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap:8px; }}
+    .rifa-cartela-nome {{ min-height:68px; border-radius:14px; padding:8px 6px; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; border:1px solid rgba(255,255,255,.12); box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 8px 18px rgba(0,0,0,.20); }}
+    .rifa-cartela-nome b {{ font-size:13px; letter-spacing:.3px; }}
+    .rifa-cartela-nome small {{ margin-top:4px; font-size:11px; font-weight:900; opacity:.92; }}
+    @media (max-width: 720px) {{ .rifa-cartela-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }} }}
+    </style>
+    <div class="rifa-grid-card">
+        <div class="rifa-grid-head">
+            <div>
+                <h3>🍀 Cartela da Sorte</h3>
+                <p>{ocupados}/{qtd_total} nomes preenchidos • {disponiveis} disponíveis</p>
+            </div>
+            <div class="rifa-legenda">
+                <span><i class="rifa-dot disponivel"></i>Disponível</span>
+                <span><i class="rifa-dot pago"></i>Pago</span>
+                <span><i class="rifa-dot pendente"></i>Pendente/Reservado</span>
+                <span><i class="rifa-dot vencedor"></i>Vencedor</span>
+            </div>
+        </div>
+        <div class="rifa-cartela-grid">
+            {''.join(blocos)}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def processar_resultado_cartela_sorte(rifa, cartela, clientes):
+    clientes_por_id = {str(c.get("id")): c for c in clientes}
+    elegiveis = [c for c in (cartela or []) if str(c.get("usuario_id") or "").strip() and str(c.get("status_pagamento") or "").lower() in ["pago", "reservado", "pendente"]]
+    if not elegiveis:
+        return False, "Não há nomes preenchidos na cartela para sortear."
+
+    escolhido = random.choice(elegiveis)
+    vencedor_uid = str(escolhido.get("usuario_id") or "")
+    nome_cartela = str(escolhido.get("nome_cartela") or "Nome")
+    vencedor_nome = nome_cliente_por_id(clientes_por_id, vencedor_uid)
+    resultado = f"🍀 Cartela da Sorte: nome sorteado {nome_cartela} — vencedor: {vencedor_nome}"
+
+    try:
+        atualizar_rifa(rifa.get("id"), {
+            "status": "sorteada",
+            "numero_sorteado": None,
+            "vencedor_usuario_id": vencedor_uid,
+            "resultado_texto": resultado,
+        })
+    except Exception:
+        atualizar_rifa(rifa.get("id"), {"status": "sorteada", "resultado_texto": resultado})
+
+    return True, resultado, nome_cartela, vencedor_nome
+
+
+def render_popup_sorteio_cartela():
+    """Popup central para o resultado da Cartela da Sorte. Não altera banco."""
+    dados = st.session_state.get("popup_sorteio_cartela") or {}
+    if not dados:
+        return
+
+    nome_sorteado = html.escape(str(dados.get("nome_cartela") or "Nome sorteado"))
+    vencedor_nome = html.escape(str(dados.get("vencedor_nome") or "Vencedor"))
+    titulo_rifa = html.escape(str(dados.get("titulo") or "Cartela da Sorte"))
+
+    def conteudo_popup():
+        st.markdown(f"""
+        <style>
+        .garagehub-popup-sorteio {{
+            text-align:center;
+            padding:18px 10px 8px;
+        }}
+        .garagehub-popup-sorteio .trofeu {{
+            font-size:56px;
+            line-height:1;
+            margin-bottom:8px;
+        }}
+        .garagehub-popup-sorteio h1 {{
+            color:#facc15;
+            margin:0 0 6px;
+            font-size:32px;
+            font-weight:950;
+        }}
+        .garagehub-popup-sorteio .sub {{
+            color:#cbd5e1;
+            font-weight:800;
+            margin-bottom:18px;
+        }}
+        .garagehub-popup-sorteio .box {{
+            border:1px solid rgba(250,204,21,.45);
+            background:linear-gradient(145deg, rgba(15,23,42,.96), rgba(2,6,23,.98));
+            border-radius:24px;
+            padding:18px;
+            margin:12px 0;
+            box-shadow:0 18px 45px rgba(0,0,0,.35), 0 0 28px rgba(250,204,21,.12);
+        }}
+        .garagehub-popup-sorteio small {{
+            color:#94a3b8;
+            text-transform:uppercase;
+            letter-spacing:.12em;
+            font-weight:950;
+        }}
+        .garagehub-popup-sorteio .nome {{
+            color:#f8fafc;
+            font-size:34px;
+            font-weight:1000;
+            margin-top:4px;
+        }}
+        .garagehub-popup-sorteio .vencedor {{
+            color:#22c55e;
+            font-size:30px;
+            font-weight:1000;
+            margin-top:4px;
+        }}
+        </style>
+        <div class="garagehub-popup-sorteio">
+            <div class="trofeu">🏆</div>
+            <h1>🍀 CARTELA DA SORTE</h1>
+            <div class="sub">{titulo_rifa}</div>
+            <div class="box">
+                <small>Nome sorteado</small>
+                <div class="nome">{nome_sorteado}</div>
+            </div>
+            <div class="box">
+                <small>Vencedor</small>
+                <div class="vencedor">{vencedor_nome}</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("✅ Fechar resultado", key="fechar_popup_sorteio_cartela", use_container_width=True):
+            st.session_state.pop("popup_sorteio_cartela", None)
+            st.rerun()
+
+    if hasattr(st, "dialog"):
+        @st.dialog("🏁 Resultado oficial do sorteio")
+        def _dialog_resultado():
+            conteudo_popup()
+        _dialog_resultado()
+    else:
+        conteudo_popup()
+
+
+def render_admin_cartela_sorte_bloco(rifa, clientes, clientes_por_id, rifas):
+    rifa_id = rifa.get("id")
+
+    popup_atual = st.session_state.get("popup_sorteio_cartela") or {}
+    if str(popup_atual.get("rifa_id") or "") == str(rifa_id):
+        render_popup_sorteio_cartela()
+
+    cartela = garantir_cartela_rifa(rifa)
+    qtd_total = len(cartela)
+    ocupados = len([c for c in cartela if str(c.get("usuario_id") or "").strip()])
+    pagos = len([c for c in cartela if str(c.get("status_pagamento") or "").lower() == "pago"])
+    disponiveis = max(qtd_total - ocupados, 0)
+    arrecadado = pagos * float(rifa.get("valor_numero") or 0)
+    progresso = int((ocupados / qtd_total) * 100) if qtd_total else 0
+
+    foto = get_foto_item({"foto_url": rifa.get("premio_foto_url")})
+    img = imagem_html(foto, "market-img") if foto else '<div class="market-empty">🍀</div>'
+    status = html.escape(str(rifa.get("status") or "aberta"))
+
+    st.markdown(f"""
+    <div class="market-card hall-glow">
+        {img}
+        <div class="market-body">
+            <div class="favorite-chip">🍀</div>
+            <h3 class="market-name">{html.escape(str(rifa.get('titulo') or 'Cartela da Sorte'))}</h3>
+            <div class="market-tags">
+                <span class="market-tag market-tag-vip">🍀 Cartela da Sorte</span>
+                <span class="market-tag market-tag-ok">{status}</span>
+            </div>
+            <p class="market-line"><b>Prêmio:</b> {html.escape(str(rifa.get('premio_nome') or '-'))}</p>
+            <p class="market-line"><b>Descrição:</b> {html.escape(str(rifa.get('descricao') or '-'))}</p>
+            <p class="market-line"><b>Como funciona:</b> o cliente reserva nomes na cartela; o admin confirma o pagamento e depois sorteia um nome preenchido.</p>
+            <div class="market-price-grid">
+                <div class="market-price"><small>Nomes</small><strong>{ocupados}/{qtd_total}</strong></div>
+                <div class="market-price"><small>Disponíveis</small><strong>{disponiveis}</strong></div>
+                <div class="market-price"><small>Arrecadado pago</small><strong>{money(arrecadado)}</strong></div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.progress(min(progresso, 100), text=f"{progresso}% da cartela preenchida")
+
+    col_refresh_cartela, col_refresh_cartela_txt = st.columns([1, 4])
+    with col_refresh_cartela:
+        if st.button("🔄 Atualizar cartela", key=f"admin_refresh_cartela_{rifa_id}", use_container_width=True):
+            st.rerun()
+    with col_refresh_cartela_txt:
+        st.caption("Atualiza os nomes reservados pelos clientes nesta Cartela da Sorte.")
+
+    render_grade_cartela_rifa(rifa, cartela, clientes_por_id)
+
+    if rifa.get("resultado_texto"):
+        st.markdown(resultado_rifa_html(rifa, clientes_por_id), unsafe_allow_html=True)
+
+    with st.expander(f"⚙️ Gerenciar Cartela da Sorte — {rifa.get('titulo')}", expanded=False):
+        if not clientes:
+            st.warning("Cadastre clientes antes de preencher a cartela.")
+        else:
+            mapa_clientes = {f"{c.get('nome','')} — {c.get('email','')}": c for c in clientes}
+            disponiveis_itens = [c for c in cartela if not str(c.get("usuario_id") or "").strip()]
+            opcoes = {f"{idx:02d} - {c.get('nome_cartela')}": c for idx, c in enumerate(disponiveis_itens, start=1)}
+
+            cc1, cc2 = st.columns([2, 1])
+            with cc1:
+                cliente_label = st.selectbox("Cliente comprador", list(mapa_clientes.keys()), key=f"cartela_cliente_{rifa_id}")
+            with cc2:
+                status_compra = st.selectbox("Status", ["pago", "pendente", "reservado"], key=f"cartela_status_{rifa_id}")
+
+            nomes_escolhidos = st.multiselect(
+                "Nomes da cartela para este cliente",
+                list(opcoes.keys()),
+                key=f"cartela_nomes_{rifa_id}",
+                help="Escolha um ou mais nomes disponíveis da cartela."
+            )
+
+            if st.button("➕ Lançar nomes para cliente", key=f"cartela_lancar_{rifa_id}", use_container_width=True):
+                if not nomes_escolhidos:
+                    st.warning("Escolha pelo menos um nome disponível.")
+                else:
+                    cliente_sel = mapa_clientes[cliente_label]
+                    for label in nomes_escolhidos:
+                        item = opcoes[label]
+                        atualizar_nome_cartela(item.get("id"), {
+                            "usuario_id": str(cliente_sel.get("id")),
+                            "comprador_nome": cliente_sel.get("nome") or "Cliente",
+                            "status_pagamento": status_compra,
+                        })
+                    st.success(f"{len(nomes_escolhidos)} nome(s) lançado(s) na cartela.")
+                    st.rerun()
+
+        if cartela:
+            st.markdown("#### Nomes preenchidos")
+            linhas = []
+            for idx, c in enumerate(cartela, start=1):
+                linhas.append({
+                    "Posição": idx,
+                    "Nome da cartela": c.get("nome_cartela"),
+                    "Comprador": nome_exibicao_cartela(c, clientes_por_id) or "Disponível",
+                    "Status": c.get("status_pagamento") or "disponivel",
+                })
+            st.dataframe(linhas, use_container_width=True, hide_index=True)
+
+            st.markdown("#### ✅ Confirmação de pagamento em lote")
+            grupos = {}
+            for c in cartela:
+                uid = str(c.get("usuario_id") or "")
+                if not uid:
+                    continue
+                status_atual = str(c.get("status_pagamento") or "pendente").lower()
+                grupos.setdefault((uid, status_atual), []).append(c)
+
+            for idx_grupo, ((uid, status_atual), itens) in enumerate(grupos.items()):
+                nome_cliente = nome_cliente_por_id(clientes_por_id, uid)
+                nomes_txt = ", ".join(str(i.get("nome_cartela")) for i in itens[:50])
+                valor_grupo = len(itens) * float(rifa.get("valor_numero") or 0)
+                st.markdown(f"""
+                <div class="pro-card hall-glow">
+                    <h3>👤 {html.escape(str(nome_cliente))}</h3>
+                    <p><strong>{len(itens)}</strong> nome(s) • Status atual: <strong>{html.escape(status_atual)}</strong><br>
+                    Valor previsto: <strong>{money(valor_grupo)}</strong><br>Nomes: {html.escape(nomes_txt)}</p>
+                </div>
+                """, unsafe_allow_html=True)
+                g1, g2, g3 = st.columns(3)
+                with g1:
+                    if st.button("✅ Marcar lote como pago", key=f"cartela_pago_{rifa_id}_{uid}_{status_atual}_{idx_grupo}", use_container_width=True):
+                        for item in itens:
+                            atualizar_nome_cartela(item.get("id"), {"status_pagamento": "pago"})
+                        st.success("Lote marcado como pago.")
+                        st.rerun()
+                with g2:
+                    if st.button("🔵 Voltar para reservado", key=f"cartela_reservado_{rifa_id}_{uid}_{status_atual}_{idx_grupo}", use_container_width=True):
+                        for item in itens:
+                            atualizar_nome_cartela(item.get("id"), {"status_pagamento": "reservado"})
+                        st.success("Lote marcado como reservado.")
+                        st.rerun()
+                with g3:
+                    confirmar_liberar = st.checkbox("Confirmar liberação", key=f"cartela_conf_lib_{rifa_id}_{uid}_{status_atual}_{idx_grupo}")
+                    if st.button("🗑️ Liberar nomes", key=f"cartela_liberar_{rifa_id}_{uid}_{status_atual}_{idx_grupo}", use_container_width=True):
+                        if not confirmar_liberar:
+                            st.warning("Marque a confirmação antes de liberar.")
+                        else:
+                            for item in itens:
+                                liberar_nome_cartela(item.get("id"))
+                            st.success("Nomes liberados.")
+                            st.rerun()
+
+        st.divider()
+        st.markdown("### 🍀 Área oficial do sorteio da cartela")
+        if str(rifa.get("status") or "") == "sorteada":
+            st.success("Esta cartela já foi sorteada. O resultado oficial está gravado acima.")
+        elif disponiveis > 0:
+            st.warning(f"A cartela ainda possui {disponiveis} nome(s) disponível(is). O sorteio é liberado quando a cartela estiver completa.")
+
+        confirmar_sorteio = st.checkbox("Confirmo que quero sortear esta cartela agora", key=f"cartela_confirmar_sorteio_{rifa_id}")
+        ac1, ac2, ac3 = st.columns(3)
+        with ac1:
+            if st.button("🍀 Sortear Cartela agora", key=f"cartela_sortear_{rifa_id}", use_container_width=True, disabled=(str(rifa.get("status")) == "sorteada" or not confirmar_sorteio or disponiveis > 0)):
+                resultado_cartela = processar_resultado_cartela_sorte(rifa, buscar_cartela_rifa(rifa_id), clientes)
+                ok = resultado_cartela[0]
+                msg = resultado_cartela[1]
+                if ok:
+                    nome_sorteado = resultado_cartela[2] if len(resultado_cartela) > 2 else "Nome sorteado"
+                    vencedor_nome = resultado_cartela[3] if len(resultado_cartela) > 3 else "Vencedor"
+                    st.session_state["popup_sorteio_cartela"] = {
+                        "rifa_id": str(rifa_id),
+                        "titulo": str(rifa.get("titulo") or "Cartela da Sorte"),
+                        "nome_cartela": nome_sorteado,
+                        "vencedor_nome": vencedor_nome,
+                        "resultado": msg,
+                    }
+                    st.balloons()
+                    st.rerun()
+                else:
+                    st.warning(msg)
+        with ac2:
+            novo_status = st.selectbox("Alterar status", ["aberta", "pausada", "encerrada", "sorteada"], index=["aberta", "pausada", "encerrada", "sorteada"].index(str(rifa.get("status") or "aberta")) if str(rifa.get("status") or "aberta") in ["aberta", "pausada", "encerrada", "sorteada"] else 0, key=f"cartela_novo_status_{rifa_id}")
+            if st.button("💾 Salvar status", key=f"cartela_salvar_status_{rifa_id}", use_container_width=True):
+                atualizar_rifa(rifa_id, {"status": novo_status})
+                st.success("Status atualizado.")
+                st.rerun()
+        with ac3:
+            confirmar = st.checkbox("Confirmar exclusão", key=f"cartela_confirmar_excluir_{rifa_id}")
+            if st.button("🗑️ Excluir cartela", key=f"cartela_excluir_{rifa_id}", use_container_width=True):
+                if not confirmar:
+                    st.warning("Confirme antes de excluir.")
+                else:
+                    excluir_rifa(rifa_id)
+                    st.success("Cartela excluída.")
+                    st.rerun()
+
+
+def render_cliente_cartela_sorte_bloco(rifa, usuario, clientes_por_id):
+    rifa_id = rifa.get("id")
+    cartela = garantir_cartela_rifa(rifa)
+    qtd_total = len(cartela)
+    ocupados = len([c for c in cartela if str(c.get("usuario_id") or "").strip()])
+    pagos = len([c for c in cartela if str(c.get("status_pagamento") or "").lower() == "pago"])
+    disponiveis = max(qtd_total - ocupados, 0)
+    progresso = int((ocupados / qtd_total) * 100) if qtd_total else 0
+    meus_nomes = [c for c in cartela if str(c.get("usuario_id")) == str(usuario.get("id"))]
+    valor_total_cliente = len(meus_nomes) * float(rifa.get("valor_numero") or 0)
+
+    foto = get_foto_item({"foto_url": rifa.get("premio_foto_url")})
+    img = imagem_html(foto, "market-img") if foto else '<div class="market-empty">🍀</div>'
+    status = html.escape(str(rifa.get("status") or "aberta"))
+
+    st.markdown(f"""
+    <div class="market-card hall-glow">
+        {img}
+        <div class="market-body">
+            <div class="favorite-chip">🍀</div>
+            <h3 class="market-name">{html.escape(str(rifa.get('titulo') or 'Cartela da Sorte'))}</h3>
+            <div class="market-tags">
+                <span class="market-tag market-tag-vip">🍀 Cartela da Sorte</span>
+                <span class="market-tag market-tag-ok">{status}</span>
+            </div>
+            <p class="market-line"><b>Prêmio:</b> {html.escape(str(rifa.get('premio_nome') or '-'))}</p>
+            <p class="market-line"><b>Descrição:</b> {html.escape(str(rifa.get('descricao') or '-'))}</p>
+            <p class="market-line"><b>Como funciona:</b> quando a cartela estiver completa, o sistema sorteia um nome preenchido.</p>
+            <div class="market-price-grid">
+                <div class="market-price"><small>Valor por nome</small><strong>{money(rifa.get('valor_numero') or 0)}</strong></div>
+                <div class="market-price"><small>Nomes</small><strong>{ocupados}/{qtd_total}</strong></div>
+                <div class="market-price"><small>Disponíveis</small><strong>{disponiveis}</strong></div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.progress(min(progresso, 100), text=f"{progresso}% da cartela preenchida")
+    st.markdown(f"""
+    <div class="pro-grid">
+        <div class="pro-card hall-glow"><h3>🍀 Seus nomes</h3><p><strong>{len(meus_nomes)}</strong><br>Nomes vinculados a você nesta cartela.</p></div>
+        <div class="pro-card hall-glow"><h3>💰 Total investido</h3><p><strong>{money(valor_total_cliente)}</strong><br>Valor total dos seus nomes.</p></div>
+        <div class="pro-card hall-glow"><h3>✅ Pagos confirmados</h3><p><strong>{pagos}</strong><br>Nomes pagos na cartela inteira.</p></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if meus_nomes:
+        st.success("Seus nomes nesta cartela: " + ", ".join(str(c.get("nome_cartela")) for c in meus_nomes))
+    else:
+        st.info("Você ainda não possui nomes nesta cartela. Escolha abaixo um ou mais nomes disponíveis para reservar.")
+
+    # Cliente escolhe os próprios nomes da Cartela da Sorte.
+    # Mantém o admin como responsável por confirmar pagamento depois.
+    pode_reservar_cartela = str(rifa.get("status") or "").lower() == "aberta"
+    disponiveis_cliente = [c for c in cartela if not str(c.get("usuario_id") or "").strip()]
+
+    with st.expander("🍀 Escolher meus nomes na Cartela da Sorte", expanded=bool(disponiveis_cliente and pode_reservar_cartela)):
+        if not pode_reservar_cartela:
+            st.warning("Esta cartela não está aberta para novas reservas.")
+        elif not disponiveis_cliente:
+            st.warning("Esta cartela já está completa. Aguarde o sorteio.")
+        else:
+            opcoes_cliente = {
+                f"{idx:02d} - {c.get('nome_cartela')}": c
+                for idx, c in enumerate(disponiveis_cliente, start=1)
+            }
+            nomes_escolhidos_cliente = st.multiselect(
+                "Escolha um ou mais nomes disponíveis",
+                list(opcoes_cliente.keys()),
+                key=f"cliente_cartela_nomes_{rifa_id}",
+                help="Após reservar, o admin confirma o pagamento e muda o status para pago."
+            )
+            valor_reserva_cliente = len(nomes_escolhidos_cliente) * float(rifa.get("valor_numero") or 0)
+            st.metric("Total da reserva", money(valor_reserva_cliente))
+
+            if st.button("🍀 Reservar meus nomes", key=f"cliente_cartela_reservar_{rifa_id}", use_container_width=True):
+                if not nomes_escolhidos_cliente:
+                    st.warning("Escolha pelo menos um nome disponível.")
+                else:
+                    cliente_nome = str(usuario.get("nome") or usuario.get("email") or "Cliente")
+                    reservados = 0
+                    falhas = 0
+                    for label in nomes_escolhidos_cliente:
+                        item = opcoes_cliente.get(label)
+                        if not item:
+                            falhas += 1
+                            continue
+                        try:
+                            # Atualiza apenas se ainda estiver disponível, evitando conflito se dois clientes clicarem ao mesmo tempo.
+                            resp = (
+                                supabase.table("rifa_cartela_nomes")
+                                .update({
+                                    "usuario_id": str(usuario.get("id")),
+                                    "comprador_nome": cliente_nome,
+                                    "status_pagamento": "reservado",
+                                })
+                                .eq("id", item.get("id"))
+                                .is_("usuario_id", "null")
+                                .execute()
+                            )
+                            if getattr(resp, "data", None):
+                                reservados += 1
+                            else:
+                                falhas += 1
+                        except Exception:
+                            try:
+                                # Fallback para ambientes onde o filtro IS NULL do client não funcione como esperado.
+                                item_atual = buscar_cartela_rifa(rifa_id)
+                                ainda_livre = next((x for x in item_atual if str(x.get("id")) == str(item.get("id")) and not str(x.get("usuario_id") or "").strip()), None)
+                                if ainda_livre:
+                                    atualizar_nome_cartela(item.get("id"), {
+                                        "usuario_id": str(usuario.get("id")),
+                                        "comprador_nome": cliente_nome,
+                                        "status_pagamento": "reservado",
+                                    })
+                                    reservados += 1
+                                else:
+                                    falhas += 1
+                            except Exception:
+                                falhas += 1
+
+                    if reservados:
+                        st.success(f"{reservados} nome(s) reservado(s) com sucesso. Aguarde o admin confirmar o pagamento.")
+                    if falhas:
+                        st.warning(f"{falhas} nome(s) não foram reservados porque podem ter sido escolhidos por outro cliente. Atualize e tente novamente.")
+                    st.rerun()
+
+    render_grade_cartela_rifa(rifa, buscar_cartela_rifa(rifa_id), clientes_por_id)
+
+    if rifa.get("resultado_texto"):
+        st.markdown(resultado_rifa_html(rifa, clientes_por_id), unsafe_allow_html=True)
+
+    with st.expander("📋 Resumo da cartela", expanded=False):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.metric("Pagos", pagos)
+        with c2:
+            st.metric("Preenchidos", ocupados)
+        with c3:
+            st.metric("Disponíveis", disponiveis)
+
+        linhas = []
+        for idx, c in enumerate(cartela, start=1):
+            linhas.append({
+                "Posição": idx,
+                "Nome": c.get("nome_cartela"),
+                "Status": c.get("status_pagamento") or "disponivel",
+                "Cliente": nome_exibicao_cartela(c, clientes_por_id) or "Disponível",
+            })
+        st.dataframe(linhas, use_container_width=True, hide_index=True)
+
 def render_rifas_admin(clientes):
     st.markdown("""
     <div class="admin-work-card">
         <h3>🎟️ Rifas Automáticas GarageHub</h3>
-        <p>Crie rifas no modo Normal, Top comprador, Top ganhador ou Híbrida, com mapa visual de números.</p>
+        <p>Crie rifas no modo Normal, Top comprador, Top ganhador, Híbrida ou Cartela da Sorte, sem alterar as rifas existentes.</p>
     </div>
     """, unsafe_allow_html=True)
+
+    col_refresh_rifas, col_refresh_txt = st.columns([1, 4])
+    with col_refresh_rifas:
+        if st.button("🔄 Atualizar rifas", key="admin_refresh_rifas_geral", use_container_width=True):
+            st.rerun()
+    with col_refresh_txt:
+        st.caption("Atualiza rifas, cartelas e reservas de nomes feitas pelos clientes, sem precisar apertar F5.")
 
     try:
         rifas = buscar_rifas()
@@ -6036,6 +6679,7 @@ def render_rifas_admin(clientes):
         <div class="feature-card"><h3>💰 Top comprador</h3><p>Sem sorteio: vence quem comprou mais números.</p></div>
         <div class="feature-card"><h3>👑 Top ganhador</h3><p>Sem sorteio: vence quem lidera o histórico de vitórias.</p></div>
         <div class="feature-card"><h3>🔥 Híbrida</h3><p>Sorteio normal + Top comprador + Top ganhador.</p></div>
+        <div class="feature-card"><h3>🍀 Cartela da Sorte</h3><p>Cartela visual de nomes, igual à cartela física.</p></div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -6057,6 +6701,7 @@ def render_rifas_admin(clientes):
                     "💰 Top comprador": "top_comprador",
                     "👑 Top ganhador": "top_ganhador",
                     "🔥 Híbrida": "hibrida",
+                    "🍀 Cartela da Sorte": "cartela_sorte",
                 }
                 r_modo_label = st.selectbox("Modo de premiação", list(modos.keys()), key="rifa_modo")
                 r_status = st.selectbox("Status", ["aberta", "pausada", "encerrada"], key="rifa_status")
@@ -6094,6 +6739,9 @@ def render_rifas_admin(clientes):
 
     for rifa in rifas:
         rifa_id = rifa.get("id")
+        if is_rifa_cartela_sorte(rifa):
+            render_admin_cartela_sorte_bloco(rifa, clientes, clientes_por_id, rifas)
+            continue
         try:
             numeros = buscar_numeros_rifa(rifa_id)
         except Exception:
@@ -6369,6 +7017,7 @@ def render_rifas_cliente(usuario):
             <div class="market-stat"><strong>🎲</strong><small>sorteio normal</small></div>
             <div class="market-stat"><strong>💰</strong><small>top comprador</small></div>
             <div class="market-stat"><strong>👑</strong><small>top ganhador</small></div>
+            <div class="market-stat"><strong>🍀</strong><small>cartela da sorte</small></div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -6405,6 +7054,9 @@ def render_rifas_cliente(usuario):
 
     for rifa in rifas_visiveis:
         rifa_id = rifa.get("id")
+        if is_rifa_cartela_sorte(rifa):
+            render_cliente_cartela_sorte_bloco(rifa, usuario, clientes_por_id)
+            continue
 
         try:
             numeros = buscar_numeros_rifa_fresco(rifa_id)

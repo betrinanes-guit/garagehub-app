@@ -196,6 +196,48 @@ def ativar_mobile_pwa():
 
 ativar_mobile_pwa()
 
+# =========================
+# CORREÇÃO VISUAL STREAMLIT CLOUD - EXPANDER
+# Evita sobreposição do texto no cabeçalho do expander em deploy.
+# Não altera regras, banco, rifas, cartela, loja, garagem ou pré-venda.
+# =========================
+st.markdown("""
+<style>
+/* Corrige sobreposição no título dos expanders no Streamlit Cloud */
+div[data-testid="stExpander"] details summary {
+    min-height: 48px !important;
+    height: auto !important;
+    line-height: 1.35 !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+    padding-top: 10px !important;
+    padding-bottom: 10px !important;
+}
+
+div[data-testid="stExpander"] details summary p,
+div[data-testid="stExpander"] summary p {
+    margin: 0 !important;
+    padding: 0 !important;
+    line-height: 1.35 !important;
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: clip !important;
+}
+
+div[data-testid="stExpander"] details summary svg {
+    flex: 0 0 auto !important;
+}
+
+.stButton > button,
+.stFormSubmitButton > button {
+    line-height: 1.25 !important;
+    white-space: normal !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
 BASE_DIR = Path(__file__).parent
 BANNER_PATH = BASE_DIR / "assets" / "banner.jpg"
 STORAGE_BUCKET = "fotos-minis"

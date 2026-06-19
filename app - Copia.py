@@ -6,7 +6,7 @@ import hashlib
 import random
 import time
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -116,11 +116,127 @@ def ativar_mobile_pwa():
         color: #cbd5e1;
         font-weight: 800;
     }
+
+
+    /* =========================
+       ALERTAS FINANCEIROS ADMIN
+       ========================= */
+    .alerta-financeiro-wrap {
+        margin: 14px 0 22px;
+    }
+    .alerta-financeiro-hero {
+        background: linear-gradient(145deg, rgba(15,23,42,.95), rgba(2,6,23,.98));
+        border: 1px solid rgba(250,204,21,.26);
+        border-radius: 24px;
+        padding: 18px;
+        box-shadow: 0 18px 44px rgba(0,0,0,.28);
+    }
+    .alerta-financeiro-hero h3 {
+        margin: 0 0 6px;
+        color: #f8fafc;
+        font-size: 22px;
+    }
+    .alerta-financeiro-hero p {
+        margin: 0;
+        color: #cbd5e1;
+        font-weight: 800;
+    }
+    .alerta-financeiro-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+        margin-top: 14px;
+    }
+    .alerta-pagamento-amarelo,
+    .alerta-pagamento-vermelho {
+        border-radius: 22px;
+        padding: 16px;
+        box-shadow: 0 18px 38px rgba(0,0,0,.28);
+    }
+    .alerta-pagamento-amarelo {
+        background: repeating-linear-gradient(
+            45deg,
+            rgba(250, 204, 21, .28),
+            rgba(250, 204, 21, .28) 10px,
+            rgba(113, 63, 18, .18) 10px,
+            rgba(113, 63, 18, .18) 20px
+        );
+        border: 2px solid #facc15;
+        color: #fef9c3;
+    }
+    .alerta-pagamento-vermelho {
+        background: repeating-linear-gradient(
+            45deg,
+            rgba(239, 68, 68, .32),
+            rgba(239, 68, 68, .32) 10px,
+            rgba(127, 29, 29, .25) 10px,
+            rgba(127, 29, 29, .25) 20px
+        );
+        border: 2px solid #ef4444;
+        color: #fee2e2;
+    }
+    .alerta-pagamento-amarelo h4,
+    .alerta-pagamento-vermelho h4 {
+        margin: 0 0 8px;
+        font-size: 18px;
+        color: inherit;
+    }
+    .alerta-pagamento-amarelo p,
+    .alerta-pagamento-vermelho p {
+        margin: 4px 0;
+        font-weight: 850;
+        color: inherit;
+    }
+    @media (max-width: 900px) {
+        .alerta-financeiro-grid { grid-template-columns: 1fr; }
+    }
     </style>
     """, unsafe_allow_html=True)
 
 
 ativar_mobile_pwa()
+
+# =========================
+# CORREÇÃO VISUAL STREAMLIT CLOUD - EXPANDER
+# Evita sobreposição do texto no cabeçalho do expander em deploy.
+# Não altera regras, banco, rifas, cartela, loja, garagem ou pré-venda.
+# =========================
+st.markdown("""
+<style>
+/* Corrige sobreposição no título dos expanders no Streamlit Cloud */
+div[data-testid="stExpander"] details summary {
+    min-height: 48px !important;
+    height: auto !important;
+    line-height: 1.35 !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+    padding-top: 10px !important;
+    padding-bottom: 10px !important;
+}
+
+div[data-testid="stExpander"] details summary p,
+div[data-testid="stExpander"] summary p {
+    margin: 0 !important;
+    padding: 0 !important;
+    line-height: 1.35 !important;
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: clip !important;
+}
+
+div[data-testid="stExpander"] details summary svg {
+    flex: 0 0 auto !important;
+}
+
+.stButton > button,
+.stFormSubmitButton > button {
+    line-height: 1.25 !important;
+    white-space: normal !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 
 BASE_DIR = Path(__file__).parent
 BANNER_PATH = BASE_DIR / "assets" / "banner.jpg"
@@ -670,6 +786,171 @@ def qtd_pendente_pagamento(minis):
     return len([m for m in (minis or []) if is_pendente_pagamento(m)])
 
 
+
+def normalizar_data_pagamento_prevista(valor):
+    """Converte data prevista de pagamento para date, aceitando date/datetime/texto."""
+    if not valor:
+        return None
+
+    if isinstance(valor, datetime):
+        return valor.date()
+
+    if isinstance(valor, date):
+        return valor
+
+    texto = str(valor).strip()
+    if not texto or texto.lower() in ["none", "null", "nan"]:
+        return None
+
+    try:
+        return datetime.fromisoformat(texto[:10]).date()
+    except Exception:
+        pass
+
+    for formato in ["%d/%m/%Y", "%Y-%m-%d"]:
+        try:
+            return datetime.strptime(texto[:10], formato).date()
+        except Exception:
+            pass
+
+    return None
+
+
+def classificar_alerta_pagamento(data_prevista, status_pagamento):
+    """Retorna vencido, vence_hoje, vence_amanha, futuro ou vazio. Não altera banco."""
+    status = str(status_pagamento or "").strip().lower()
+    if status in ["pago", "concluido", "cancelado", "incluido_na_garagem"]:
+        return ""
+
+    data_venc = normalizar_data_pagamento_prevista(data_prevista)
+    if not data_venc:
+        return ""
+
+    hoje = date.today()
+    if data_venc < hoje:
+        return "vencido"
+    if data_venc == hoje:
+        return "vence_hoje"
+    if data_venc == hoje + timedelta(days=1):
+        return "vence_amanha"
+    return "futuro"
+
+
+def formatar_data_br(valor):
+    data_venc = normalizar_data_pagamento_prevista(valor)
+    return data_venc.strftime("%d/%m/%Y") if data_venc else "-"
+
+
+def formatar_data_input_br(valor):
+    """Formata a data para campo texto editável. Campo vazio permite remover a data."""
+    data_venc = normalizar_data_pagamento_prevista(valor)
+    return data_venc.strftime("%d/%m/%Y") if data_venc else ""
+
+
+def data_pagamento_para_banco(valor):
+    """Converte o campo editável de data para o Supabase. Vazio grava NULL."""
+    if valor is None:
+        return None
+
+    if isinstance(valor, datetime):
+        return valor.date().isoformat()
+
+    if isinstance(valor, date):
+        return valor.isoformat()
+
+    texto = str(valor).strip()
+
+    if not texto or texto.lower() in ["none", "null", "nan", "-", "dd/mm/yyyy"]:
+        return None
+
+    data_venc = normalizar_data_pagamento_prevista(texto)
+    if data_venc:
+        return data_venc.isoformat()
+
+    return None
+
+
+def montar_alertas_financeiros_admin(minis, clientes):
+    """Monta alertas de leitura para o admin com base em data_pagamento_prevista da tabela minis."""
+    clientes_por_id = {str(c.get("id")): c for c in (clientes or [])}
+    alertas = []
+
+    for mini in minis or []:
+        tipo_alerta = classificar_alerta_pagamento(
+            mini.get("data_pagamento_prevista"),
+            mini.get("status_pagamento")
+        )
+        if tipo_alerta not in ["vencido", "vence_hoje", "vence_amanha"]:
+            continue
+
+        cliente = clientes_por_id.get(str(mini.get("usuario_id")), {})
+        data_venc = normalizar_data_pagamento_prevista(mini.get("data_pagamento_prevista"))
+        dias_atraso = 0
+        if data_venc and tipo_alerta == "vencido":
+            dias_atraso = max(0, (date.today() - data_venc).days)
+
+        alertas.append({
+            "tipo": tipo_alerta,
+            "cliente": cliente,
+            "mini": mini,
+            "data": data_venc,
+            "dias_atraso": dias_atraso,
+        })
+
+    return sorted(alertas, key=lambda a: (a.get("data") or date.max, str(a.get("cliente", {}).get("nome") or "")))
+
+
+def render_alertas_financeiros_admin(minis, clientes, limite=12):
+    alertas = montar_alertas_financeiros_admin(minis, clientes)
+    vencidos = [a for a in alertas if a["tipo"] == "vencido"]
+    vence_hoje = [a for a in alertas if a["tipo"] == "vence_hoje"]
+    vence_amanha = [a for a in alertas if a["tipo"] == "vence_amanha"]
+
+    total_urgentes = len(vencidos) + len(vence_hoje) + len(vence_amanha)
+
+    st.markdown(f"""
+    <div class="alerta-financeiro-wrap">
+        <div class="alerta-financeiro-hero">
+            <h3>🔔 Alertas financeiros do admin</h3>
+            <p>Somente o admin visualiza. Leitura automática de pagamentos pré-datados: {len(vence_amanha)} vence(m) amanhã, {len(vence_hoje)} vence(m) hoje e {len(vencidos)} vencido(s).</p>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if total_urgentes == 0:
+        st.info("Nenhum pagamento pré-datado vencendo amanhã, hoje ou vencido.")
+        return
+
+    cards = []
+    for alerta in (vencidos + vence_hoje + vence_amanha)[:limite]:
+        mini = alerta.get("mini") or {}
+        cliente = alerta.get("cliente") or {}
+        tipo = alerta.get("tipo")
+        classe = "alerta-pagamento-vermelho" if tipo == "vencido" else "alerta-pagamento-amarelo"
+        if tipo == "vencido":
+            titulo = "🚨 Pagamento vencido"
+            extra = f"{alerta.get('dias_atraso', 0)} dia(s) em atraso"
+        elif tipo == "vence_hoje":
+            titulo = "⚠️ Pagamento vence hoje"
+            extra = "vence hoje"
+        else:
+            titulo = "⚠️ Pagamento vence amanhã"
+            extra = "vence amanhã"
+
+        cards.append(f"""
+        <div class="{classe}">
+            <h4>{html.escape(titulo)}</h4>
+            <p><b>Cliente:</b> {html.escape(str(cliente.get('nome') or 'Cliente não identificado'))}</p>
+            <p><b>Mini:</b> {html.escape(str(mini.get('nome') or 'Mini'))}</p>
+            <p><b>Valor:</b> {money(mini.get('valor_pago') or 0)} • <b>Vencimento:</b> {formatar_data_br(mini.get('data_pagamento_prevista'))}</p>
+            <p><b>Status atual:</b> {html.escape(str(mini.get('status_pagamento') or 'pendente'))} • {html.escape(extra)}</p>
+        </div>
+        """)
+
+    st.markdown('<div class="alerta-financeiro-grid">' + ''.join(cards) + '</div>', unsafe_allow_html=True)
+
+
+
 def buscar_minis(usuario_id):
     return (
         supabase.table("minis")
@@ -682,7 +963,7 @@ def buscar_minis(usuario_id):
 
 
 def cadastrar_mini(usuario_id, nome, marca, serie, ano, raridade, valor_pago, valor_estimado, foto_url,
-                   status_pagamento="pendente", tipo_mini="compra", destaque_cliente=""):
+                   status_pagamento="pendente", tipo_mini="compra", destaque_cliente="", data_pagamento_prevista=None):
     dados = {
         "usuario_id": usuario_id,
         "nome": nome,
@@ -695,7 +976,8 @@ def cadastrar_mini(usuario_id, nome, marca, serie, ano, raridade, valor_pago, va
         "foto_url": foto_url or "",
         "status_pagamento": status_pagamento or "pendente",
         "tipo_mini": tipo_mini or "compra",
-        "destaque_cliente": destaque_cliente or ""
+        "destaque_cliente": destaque_cliente or "",
+        "data_pagamento_prevista": str(data_pagamento_prevista) if data_pagamento_prevista else None
     }
 
     try:
@@ -705,6 +987,7 @@ def cadastrar_mini(usuario_id, nome, marca, serie, ano, raridade, valor_pago, va
         dados.pop("status_pagamento", None)
         dados.pop("tipo_mini", None)
         dados.pop("destaque_cliente", None)
+        dados.pop("data_pagamento_prevista", None)
         supabase.table("minis").insert(dados).execute()
 
 
@@ -718,6 +1001,195 @@ def atualizar_mini(mini_id, dados):
 
 def excluir_mini(mini_id):
     supabase.table("minis").delete().eq("id", mini_id).execute()
+
+
+def origem_operacional_mini(mini):
+    """Define a origem operacional sem exigir coluna nova no Supabase.
+
+    Regra de emergência:
+    - tipo_mini = loja/compra/pre_venda => protegido, não exclui pela garagem;
+    - tipo_mini = manual_migracao/manual/migracao => pode excluir pela garagem do cliente.
+    """
+    tipo = str((mini or {}).get("tipo_mini") or "").strip().lower()
+    destaque = str((mini or {}).get("destaque_cliente") or "").strip().lower()
+
+    if tipo in ["manual_migracao", "manual", "migracao", "migração"]:
+        return "manual"
+
+    if "origem: manual" in destaque or "migração" in destaque or "migracao" in destaque:
+        return "manual"
+
+    return "loja"
+
+
+def pode_excluir_mini_pela_garagem(mini):
+    return origem_operacional_mini(mini) == "manual"
+
+
+def is_mini_pre_venda(mini):
+    """Identifica minis lançadas na garagem a partir do módulo de pré-venda."""
+    tipo = str((mini or {}).get("tipo_mini") or "").strip().lower()
+    destaque = str((mini or {}).get("destaque_cliente") or "").strip().lower()
+    return tipo == "pre_venda" or "pré-venda" in destaque or "pre-venda" in destaque
+
+
+def extrair_reserva_id_destaque(destaque):
+    """Lê o ID da reserva gravado no destaque, quando existir."""
+    texto = str(destaque or "")
+    padroes = [
+        r"reserva[_\s-]*id\s*[:=]\s*([0-9a-fA-F-]+)",
+        r"reserva\s+pré-venda\s*[:=]\s*([0-9a-fA-F-]+)",
+        r"reserva\s+pre-venda\s*[:=]\s*([0-9a-fA-F-]+)",
+    ]
+    for padrao in padroes:
+        m = re.search(padrao, texto, flags=re.IGNORECASE)
+        if m:
+            return m.group(1)
+    return None
+
+
+def buscar_reserva_pre_venda_por_id(reserva_id):
+    if not reserva_id:
+        return None
+    try:
+        resp = supabase.table("pre_venda_reservas").select("*").eq("id", reserva_id).execute()
+        return resp.data[0] if resp.data else None
+    except Exception:
+        return None
+
+
+def localizar_reserva_pre_venda_da_mini(mini):
+    """
+    Tenta localizar a reserva que originou uma mini de pré-venda na garagem.
+    Primeiro usa o ID gravado no destaque. Para registros antigos, faz fallback por cliente + nome da pré-venda.
+    """
+    if not mini or not is_mini_pre_venda(mini):
+        return None, None
+
+    reserva_id = extrair_reserva_id_destaque(mini.get("destaque_cliente"))
+    reserva = buscar_reserva_pre_venda_por_id(reserva_id) if reserva_id else None
+
+    if reserva:
+        pre_venda = buscar_pre_venda_por_id(reserva.get("pre_venda_id")) or {}
+        return reserva, pre_venda
+
+    try:
+        reservas = buscar_reservas_pre_venda(cliente_id=mini.get("usuario_id"))
+        nome_mini = str(mini.get("nome") or "").strip().lower()
+
+        for r in reservas:
+            pv = buscar_pre_venda_por_id(r.get("pre_venda_id")) or {}
+            if str(pv.get("nome") or "").strip().lower() == nome_mini:
+                return r, pv
+    except Exception:
+        pass
+
+    return None, None
+
+
+def resumo_pre_venda_mini_garagem(mini):
+    """Retorna quantidade/valores da reserva de pré-venda para exibir ao admin."""
+    reserva, pre_venda = localizar_reserva_pre_venda_da_mini(mini)
+
+    if reserva:
+        qtd = int(reserva.get("quantidade") or 1)
+        valor_total = float(reserva.get("valor_total") or 0)
+        valor_unitario = valor_total / qtd if qtd else float(pre_venda.get("valor_total") or mini.get("valor_pago") or 0)
+        return {
+            "reserva": reserva,
+            "pre_venda": pre_venda or {},
+            "quantidade": qtd,
+            "valor_unitario": valor_unitario,
+            "valor_total": valor_total,
+            "valor_sinal": float(reserva.get("valor_sinal") or 0),
+            "valor_restante": float(reserva.get("valor_restante") or 0),
+            "status_reserva": str(reserva.get("status") or ""),
+        }
+
+    # Fallback para registros antigos sem vínculo com reserva.
+    return {
+        "reserva": None,
+        "pre_venda": {},
+        "quantidade": 1,
+        "valor_unitario": float(mini.get("valor_pago") or mini.get("valor_estimado") or 0),
+        "valor_total": float(mini.get("valor_pago") or mini.get("valor_estimado") or 0),
+        "valor_sinal": 0.0,
+        "valor_restante": 0.0,
+        "status_reserva": "não localizada",
+    }
+
+
+
+def limpar_destaque_pre_venda_visual(valor):
+    """Remove metadados técnicos da pré-venda da tela, mantendo o Reserva_ID preservado no banco."""
+    if isinstance(valor, dict):
+        texto = str(valor.get("destaque_cliente") or "")
+    else:
+        texto = str(valor or "")
+
+    if not texto.strip():
+        return "Pré-venda GarageHub"
+
+    partes = [p.strip() for p in texto.split("|") if p.strip()]
+    partes_visiveis = []
+
+    for parte in partes:
+        p_lower = parte.lower()
+        if re.match(r"^reserva[_\s-]*id\s*[:=]", parte, flags=re.IGNORECASE):
+            continue
+        if p_lower.startswith("quantidade solicitada"):
+            continue
+        if p_lower.startswith("valor unitário") or p_lower.startswith("valor unitario"):
+            continue
+        if p_lower.startswith("valor total da reserva"):
+            continue
+        partes_visiveis.append(parte)
+
+    texto_limpo = " | ".join(partes_visiveis).strip()
+    if not texto_limpo:
+        texto_limpo = "Pré-venda GarageHub"
+
+    return texto_limpo
+
+
+def preservar_reserva_id_no_destaque(destaque_original, destaque_editado):
+    """Preserva o Reserva_ID mesmo que o admin edite a observação limpa na tela."""
+    reserva_id = extrair_reserva_id_destaque(destaque_original)
+    destaque_editado = str(destaque_editado or "").strip()
+
+    if not reserva_id:
+        return destaque_editado
+
+    if extrair_reserva_id_destaque(destaque_editado):
+        return destaque_editado
+
+    if destaque_editado:
+        return f"{destaque_editado} | Reserva_ID: {reserva_id}"
+
+    return f"Pré-venda GarageHub | Reserva_ID: {reserva_id}"
+
+
+
+def cancelar_pre_venda_mini_garagem(mini):
+    """
+    Permite ao admin remover uma mini de pré-venda da garagem.
+    Quando encontra a reserva vinculada, marca a reserva como cancelada para liberar histórico/controle.
+    """
+    if not mini or not is_mini_pre_venda(mini):
+        return False, "Esta mini não foi identificada como pré-venda."
+
+    reserva, pre_venda = localizar_reserva_pre_venda_da_mini(mini)
+
+    try:
+        if reserva:
+            atualizar_reserva_pre_venda(reserva.get("id"), {"status": "cancelado"})
+            if pre_venda and str(pre_venda.get("status") or "").lower() == "esgotada" and quantidade_restante_pre_venda(pre_venda) > 0:
+                atualizar_pre_venda(pre_venda.get("id"), {"status": "ativa"})
+
+        excluir_mini(mini.get("id"))
+        return True, "Pré-venda removida da garagem e reserva marcada como cancelada." if reserva else "Pré-venda removida da garagem. Reserva original não localizada."
+    except Exception as e:
+        return False, f"Erro ao cancelar/remover pré-venda: {e}"
 
 
 def buscar_loja_minis(apenas_disponiveis=False):
@@ -894,24 +1366,37 @@ def efetivar_reserva_pre_venda_na_garagem(reserva, pre_venda):
     if not cliente_id:
         return False, "Reserva sem cliente vinculado."
 
-    for _ in range(qtd):
-        cadastrar_mini(
-            cliente_id,
-            pre_venda.get("nome") or "Mini pré-venda",
-            pre_venda.get("marca") or "Hot Wheels",
-            pre_venda.get("serie") or "",
-            "",
-            "Comum",
-            float(pre_venda.get("valor_total") or 0),
-            float(pre_venda.get("valor_total") or 0),
-            pre_venda.get("foto_url") or "",
-            "pago",
-            "pre_venda",
-            "Incluído a partir de pré-venda GarageHub"
-        )
+    valor_total_reserva = float(reserva.get("valor_total") or 0)
+    valor_unitario = valor_total_reserva / qtd if qtd else float(pre_venda.get("valor_total") or 0)
+
+    destaque_pre_venda = (
+        "Incluído a partir de pré-venda GarageHub | "
+        f"Reserva_ID: {reserva.get('id')} | "
+        f"Quantidade solicitada: {qtd} | "
+        f"Valor unitário: {money(valor_unitario)} | "
+        f"Valor total da reserva: {money(valor_total_reserva)}"
+    )
+
+    # A partir desta versão a reserva entra como 1 registro na garagem,
+    # mantendo a quantidade solicitada no vínculo da pré-venda.
+    # Isso evita minis duplicadas e deixa o admin enxergar a quantidade real do pedido.
+    cadastrar_mini(
+        cliente_id,
+        pre_venda.get("nome") or "Mini pré-venda",
+        pre_venda.get("marca") or "Hot Wheels",
+        pre_venda.get("serie") or "",
+        "",
+        "Comum",
+        valor_unitario,
+        valor_total_reserva,
+        pre_venda.get("foto_url") or "",
+        "pago",
+        "pre_venda",
+        destaque_pre_venda
+    )
 
     atualizar_reserva_pre_venda(reserva.get("id"), {"status": "incluido_na_garagem"})
-    return True, f"{qtd} mini(s) incluída(s) na garagem do cliente."
+    return True, f"Reserva incluída na garagem: {qtd} unidade(s) registrada(s) no controle da pré-venda."
 
 
 def texto_status_pre_venda(status):
@@ -1102,6 +1587,65 @@ def render_pre_vendas_admin(clientes):
         </div>
         """, unsafe_allow_html=True)
 
+        # Edição financeira da reserva ANTES de efetivar na garagem.
+        # Permite ao admin ajustar sinal recebido quando o cliente paga valor diferente do sinal previsto.
+        editar_bloqueado = status_reserva in ["incluido_na_garagem", "cancelado"]
+        valor_total_atual = float(r.get("valor_total") or 0)
+        valor_sinal_atual = float(r.get("valor_sinal") or 0)
+
+        with st.expander("✏️ Editar valores da reserva", expanded=True):
+            ev1, ev2, ev3, ev4 = st.columns([1, 1, 1, 1])
+            with ev1:
+                novo_valor_total_txt = st.text_input(
+                    "Valor total da reserva",
+                    value=f"{valor_total_atual:.2f}".replace(".", ","),
+                    key=f"pv_edit_total_{r['id']}",
+                    disabled=editar_bloqueado,
+                    help="Valor total reservado pelo cliente. Ex: 260,00"
+                )
+            with ev2:
+                novo_sinal_txt = st.text_input(
+                    "Sinal recebido",
+                    value=f"{valor_sinal_atual:.2f}".replace(".", ","),
+                    key=f"pv_edit_sinal_{r['id']}",
+                    disabled=editar_bloqueado,
+                    help="Digite o valor realmente pago como sinal. Ex: 45,00"
+                )
+
+            def _valor_monetario_admin(txt, padrao=0.0):
+                try:
+                    t = str(txt or "").strip()
+                    t = t.replace("R$", "").replace(" ", "")
+                    if "," in t and "." in t:
+                        t = t.replace(".", "").replace(",", ".")
+                    else:
+                        t = t.replace(",", ".")
+                    return max(0.0, float(t or 0))
+                except Exception:
+                    return float(padrao or 0)
+
+            novo_valor_total = _valor_monetario_admin(novo_valor_total_txt, valor_total_atual)
+            novo_sinal = _valor_monetario_admin(novo_sinal_txt, valor_sinal_atual)
+            novo_restante = max(0.0, novo_valor_total - novo_sinal)
+
+            with ev3:
+                st.metric("Restante recalculado", money(novo_restante))
+            with ev4:
+                if st.button("💾 Salvar valores", key=f"pv_salvar_valores_{r['id']}", use_container_width=True, disabled=editar_bloqueado):
+                    if novo_sinal > novo_valor_total:
+                        st.error("O sinal recebido não pode ser maior que o valor total da reserva.")
+                    else:
+                        atualizar_reserva_pre_venda(r["id"], {
+                            "valor_total": float(novo_valor_total),
+                            "valor_sinal": float(novo_sinal),
+                            "valor_restante": float(novo_restante),
+                        })
+                        st.success("Valores da reserva atualizados.")
+                        st.rerun()
+
+            if editar_bloqueado:
+                st.caption("Reserva já incluída na garagem ou cancelada. Para alterar valores, faça antes de incluir/cancelar.")
+
         a1, a2, a3, a4, a5 = st.columns(5)
         with a1:
             if st.button("🟡 Sinal pago", key=f"pv_sinal_pago_{r['id']}", disabled=status_reserva in ["incluido_na_garagem", "cancelado"]):
@@ -1109,7 +1653,8 @@ def render_pre_vendas_admin(clientes):
                 st.rerun()
         with a2:
             if st.button("🟢 Pago total", key=f"pv_pago_total_{r['id']}", disabled=status_reserva in ["incluido_na_garagem", "cancelado"]):
-                atualizar_reserva_pre_venda(r["id"], {"status": "pago_total"})
+                # Ao marcar pago total, garante que o restante fique zerado.
+                atualizar_reserva_pre_venda(r["id"], {"status": "pago_total", "valor_sinal": float(r.get("valor_total") or 0), "valor_restante": 0.0})
                 st.rerun()
         with a3:
             if st.button("🚗 Incluir garagem", key=f"pv_incluir_garagem_{r['id']}", disabled=status_reserva not in ["sinal_pago", "pago_total"]):
@@ -1126,7 +1671,7 @@ def render_pre_vendas_admin(clientes):
                     atualizar_pre_venda(pv.get("id"), {"status": "ativa"})
                 st.rerun()
         with a5:
-            st.caption("Libera inclusão após sinal ou total.")
+            st.caption("Edite/salve o sinal antes de marcar sinal pago ou incluir na garagem.")
 
 
 def mensagem_status_reserva_cliente(status):
@@ -1575,8 +2120,8 @@ def concluir_pedido_na_garagem(pedido, loja_item=None):
         float(pedido.get("valor_estimado") or loja_item.get("valor_estimado") or 0),
         pedido.get("foto_url") or loja_item.get("foto_url") or "",
         "pago",
-        "compra",
-        ""
+        "loja",
+        "Origem: Loja / Pedido concluído"
     )
 
     atualizar_pedido(pedido["id"], {"status": "concluido"})
@@ -1843,10 +2388,19 @@ def render_admin_garagem_cliente(usuario_cliente):
 
             status_lancamento = st.selectbox(
                 "Status de pagamento para lançar na garagem",
-                ["pago", "pendente", "reservado"],
+                ["pago", "pendente", "reservado", "pre_datado"],
                 index=0,
                 key=f"admin_status_lancar_loja_cliente_{usuario_cliente.get('id')}"
             )
+
+            data_pagamento_lancamento = None
+            if status_lancamento in ["pendente", "reservado", "pre_datado"]:
+                data_pagamento_lancamento = st.date_input(
+                    "Data prevista de pagamento (opcional)",
+                    value=None,
+                    format="DD/MM/YYYY",
+                    key=f"admin_data_pagamento_lancar_loja_cliente_{usuario_cliente.get('id')}"
+                )
 
             observacao_lancamento = st.text_input(
                 "Observação opcional",
@@ -1881,8 +2435,9 @@ def render_admin_garagem_cliente(usuario_cliente):
                                 float(item_atualizado.get("valor_estimado") or item_atualizado.get("valor") or 0),
                                 item_atualizado.get("foto_url") or "",
                                 status_lancamento,
-                                "compra",
-                                observacao_lancamento or "Lançado manualmente pelo admin a partir da Loja"
+                                "loja",
+                                observacao_lancamento or "Lançado pelo admin a partir da Loja",
+                                data_pagamento_lancamento
                             )
 
                         novo_estoque = baixar_estoque_loja_item(item_atualizado, quantidade_lancamento)
@@ -1891,10 +2446,86 @@ def render_admin_garagem_cliente(usuario_cliente):
                 except Exception as e:
                     st.error(f"Erro ao lançar mini da Loja na garagem: {e}")
 
+    # =========================
+    # ADMIN — INSERIR MINI MANUAL / MIGRAÇÃO DIRETO NA GARAGEM
+    # =========================
+    st.markdown("""
+    <div class="admin-work-card">
+        <h3>✍️ Inserir mini manual / migração</h3>
+        <p>Use este caminho para acervo migrado de plataforma antiga. Não cadastra na Loja, não baixa estoque e poderá ser excluído pela própria garagem do cliente.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.expander("➕ Adicionar mini direto na garagem do cliente", expanded=False):
+        with st.form(f"form_admin_mini_manual_cliente_{usuario_cliente.get('id')}"):
+            mc1, mc2 = st.columns(2)
+
+            with mc1:
+                manual_nome = st.text_input("Nome da mini *", key=f"manual_nome_{usuario_cliente.get('id')}")
+                manual_marca = st.text_input("Marca", value="Hot Wheels", key=f"manual_marca_{usuario_cliente.get('id')}")
+                manual_serie = st.text_input("Série / linha", key=f"manual_serie_{usuario_cliente.get('id')}")
+                manual_ano = st.text_input("Ano", key=f"manual_ano_{usuario_cliente.get('id')}")
+                manual_foto = st.file_uploader("Foto da mini", type=["png", "jpg", "jpeg"], key=f"manual_foto_{usuario_cliente.get('id')}")
+
+            with mc2:
+                manual_raridade = st.selectbox(
+                    "Raridade",
+                    ["Comum", "TH", "STH", "Premium", "RLC", "Chase", "Especial", "Limitado", "Não identificado"],
+                    key=f"manual_raridade_{usuario_cliente.get('id')}"
+                )
+                manual_valor_pago = st.number_input("Valor pago", min_value=0.0, step=1.0, value=0.0, key=f"manual_valor_pago_{usuario_cliente.get('id')}")
+                manual_valor_estimado = st.number_input("Valor estimado", min_value=0.0, step=1.0, value=0.0, key=f"manual_valor_estimado_{usuario_cliente.get('id')}")
+                manual_status = st.selectbox("Status pagamento", ["pago", "pendente", "reservado", "cancelado"], index=0, key=f"manual_status_{usuario_cliente.get('id')}")
+                manual_data_pagamento = st.date_input(
+                    "Data prevista de pagamento (opcional)",
+                    value=None,
+                    format="DD/MM/YYYY",
+                    key=f"manual_data_pagamento_{usuario_cliente.get('id')}"
+                )
+
+            manual_obs = st.text_area(
+                "Observação / origem",
+                value="Origem: manual / migração de plataforma antiga",
+                key=f"manual_obs_{usuario_cliente.get('id')}"
+            )
+
+            salvar_manual = st.form_submit_button("💾 Salvar mini manual na garagem")
+
+            if salvar_manual:
+                if not str(manual_nome or "").strip():
+                    st.error("Informe o nome da mini para salvar na garagem do cliente.")
+                else:
+                    try:
+                        manual_foto_url = upload_storage(
+                            manual_foto,
+                            "minis-migracao",
+                            f"cliente_{usuario_cliente.get('id')}_{manual_nome}"
+                        ) if manual_foto is not None else ""
+
+                        cadastrar_mini(
+                            usuario_cliente.get("id"),
+                            manual_nome,
+                            manual_marca,
+                            manual_serie,
+                            manual_ano,
+                            manual_raridade,
+                            float(manual_valor_pago or 0),
+                            float(manual_valor_estimado or manual_valor_pago or 0),
+                            manual_foto_url,
+                            manual_status,
+                            "manual_migracao",
+                            manual_obs or "Origem: manual / migração",
+                            manual_data_pagamento
+                        )
+                        st.success("Mini manual/migração incluída na garagem do cliente. Não alterou estoque da Loja.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao incluir mini manual na garagem: {e}")
+
     minis_cliente = buscar_minis(usuario_cliente.get("id"))
 
     if not minis_cliente:
-        st.info("Este cliente ainda não possui minis cadastrados. Use o bloco acima para inserir uma mini da Loja nesta garagem.")
+        st.info("Este cliente ainda não possui minis cadastrados. Use o bloco da Loja ou o bloco Manual/Migração acima para inserir minis nesta garagem.")
         return
 
     busca_admin = st.text_input(
@@ -1924,8 +2555,15 @@ def render_admin_garagem_cliente(usuario_cliente):
         tipo_atual = limpar_campo_visual(mini.get("tipo_mini"), "compra")
         destaque_atual = limpar_campo_visual(mini.get("destaque_cliente"), "")
         foto_atual = get_foto_item(mini)
+        origem_atual = origem_operacional_mini(mini)
+        origem_label = "Manual/Migração" if origem_atual == "manual" else "Loja/Protegida"
 
-        with st.expander(f"🚗 {nome_atual} — {money(mini.get('valor_estimado') or 0)}", expanded=False):
+        # Título limpo do expander da garagem.
+        # Removi emoji/HTML do início para evitar quebra visual no Streamlit.
+        titulo_expander = f"{nome_atual} — {money(mini.get('valor_estimado') or 0)} — {origem_label}"
+        titulo_expander = re.sub(r"<[^>]*>", "", str(titulo_expander)).strip()
+
+        with st.expander(titulo_expander, expanded=False):
             col_foto, col_form = st.columns([0.9, 2.1])
 
             with col_foto:
@@ -1964,12 +2602,34 @@ def render_admin_garagem_cliente(usuario_cliente):
                     opcoes_status = ["pendente", "pago", "reservado", "cancelado"]
                     idx_status = opcoes_status.index(status_atual.lower()) if status_atual.lower() in opcoes_status else 0
                     novo_status = st.selectbox("Status pagamento", opcoes_status, index=idx_status, key=f"admin_status_mini_{mini_id}")
+                    data_atual_pagamento = normalizar_data_pagamento_prevista(mini.get("data_pagamento_prevista"))
+                    nova_data_pagamento = st.text_input(
+                        "Data prevista de pagamento (opcional)",
+                        value=formatar_data_input_br(data_atual_pagamento),
+                        placeholder="DD/MM/AAAA — deixe em branco para remover",
+                        key=f"admin_data_pagamento_mini_{mini_id}",
+                        help="Para retirar a data prevista, apague o campo e salve."
+                    )
 
-                opcoes_tipo = ["compra", "scanner", "presente", "troca", "colecao"]
+                opcoes_tipo = ["loja", "manual_migracao", "compra", "scanner", "presente", "troca", "colecao", "pre_venda"]
                 idx_tipo = opcoes_tipo.index(tipo_atual.lower()) if tipo_atual.lower() in opcoes_tipo else 0
                 novo_tipo = st.selectbox("Tipo da mini", opcoes_tipo, index=idx_tipo, key=f"admin_tipo_mini_{mini_id}")
 
-                novo_destaque = st.text_area("Destaque / observação", value=destaque_atual, key=f"admin_destaque_mini_{mini_id}")
+                destaque_visual = limpar_destaque_pre_venda_visual(mini) if is_mini_pre_venda(mini) else destaque_atual
+                novo_destaque = st.text_area("Destaque / observação", value=destaque_visual, key=f"admin_destaque_mini_{mini_id}")
+
+                if is_mini_pre_venda(mini):
+                    resumo_pv = resumo_pre_venda_mini_garagem(mini)
+                    st.markdown(f"""
+                    <div class="user-info-grid" style="margin-top:14px;">
+                        <div class="user-info-item"><small>Qtd. solicitada pelo cliente</small><strong>{int(resumo_pv.get('quantidade') or 1)}</strong></div>
+                        <div class="user-info-item"><small>Valor unitário</small><strong>{money(resumo_pv.get('valor_unitario') or 0)}</strong></div>
+                        <div class="user-info-item"><small>Total da pré-venda</small><strong>{money(resumo_pv.get('valor_total') or 0)}</strong></div>
+                        <div class="user-info-item"><small>Sinal recebido</small><strong>{money(resumo_pv.get('valor_sinal') or 0)}</strong></div>
+                        <div class="user-info-item"><small>Restante</small><strong>{money(resumo_pv.get('valor_restante') or 0)}</strong></div>
+                        <div class="user-info-item"><small>Status da reserva</small><strong>{html.escape(texto_status_reserva(resumo_pv.get('status_reserva') or ''))}</strong></div>
+                    </div>
+                    """, unsafe_allow_html=True)
 
                 b1, b2 = st.columns(2)
 
@@ -1985,7 +2645,8 @@ def render_admin_garagem_cliente(usuario_cliente):
                             "valor_estimado": float(novo_valor_estimado or 0),
                             "status_pagamento": novo_status,
                             "tipo_mini": novo_tipo,
-                            "destaque_cliente": novo_destaque
+                            "destaque_cliente": preservar_reserva_id_no_destaque(destaque_atual, novo_destaque) if is_mini_pre_venda(mini) else novo_destaque,
+                            "data_pagamento_prevista": data_pagamento_para_banco(nova_data_pagamento)
                         }
 
                         if nova_foto is not None:
@@ -2000,17 +2661,34 @@ def render_admin_garagem_cliente(usuario_cliente):
                             st.error(f"Erro ao atualizar mini: {e}")
 
                 with b2:
-                    confirmar_excluir = st.checkbox("Confirmar exclusão", key=f"admin_confirmar_excluir_mini_{mini_id}")
-                    if st.button("🗑️ Excluir mini", use_container_width=True, key=f"admin_excluir_mini_{mini_id}"):
-                        if not confirmar_excluir:
-                            st.warning("Marque confirmar exclusão antes de apagar.")
-                        else:
-                            try:
-                                excluir_mini(mini_id)
-                                st.success("Mini excluída com sucesso.")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Erro ao excluir mini: {e}")
+                    if pode_excluir_mini_pela_garagem(mini):
+                        st.info("Origem manual/migração: esta mini pode ser excluída por aqui.")
+                        confirmar_excluir = st.checkbox("Confirmar exclusão", key=f"admin_confirmar_excluir_mini_{mini_id}")
+                        if st.button("🗑️ Excluir mini manual", use_container_width=True, key=f"admin_excluir_mini_{mini_id}"):
+                            if not confirmar_excluir:
+                                st.warning("Marque confirmar exclusão antes de apagar.")
+                            else:
+                                try:
+                                    excluir_mini(mini_id)
+                                    st.success("Mini manual/migração excluída da garagem do cliente.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Erro ao excluir mini: {e}")
+                    elif is_mini_pre_venda(mini):
+                        st.warning("Pré-venda: o admin pode cancelar/remover esta mini da garagem, mantendo o histórico da reserva como cancelado.")
+                        confirmar_cancelar_pv = st.checkbox("Confirmar cancelamento/remoção da pré-venda", key=f"admin_confirmar_cancelar_pv_mini_{mini_id}")
+                        if st.button("🗑️ Cancelar/remover pré-venda", use_container_width=True, key=f"admin_cancelar_pv_mini_{mini_id}"):
+                            if not confirmar_cancelar_pv:
+                                st.warning("Marque confirmar cancelamento antes de remover.")
+                            else:
+                                ok, msg = cancelar_pre_venda_mini_garagem(mini)
+                                if ok:
+                                    st.success(msg)
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
+                    else:
+                        st.warning("Mini com origem Loja/compra: exclusão bloqueada nesta garagem. Remova/controle pela Loja/Admin da Loja para proteger estoque e histórico.")
 
 
 # =========================
@@ -4856,11 +5534,14 @@ Regras obrigatórias:
         if clientes_scanner:
             mapa_clientes = {f"{c.get('nome','')} — {c.get('email','')}": c for c in clientes_scanner}
             cliente_label = st.selectbox("Cliente para lançar na garagem", list(mapa_clientes.keys()), key="scanner_ai_cliente_garagem")
-            status_lancar = st.selectbox("Status pagamento", ["pago", "pendente", "reservado"], key="scanner_ai_status_lancar")
+            status_lancar = st.selectbox("Status pagamento", ["pago", "pendente", "reservado", "pre_datado"], key="scanner_ai_status_lancar")
+            data_pagamento_scanner = None
+            if status_lancar in ["pendente", "reservado", "pre_datado"]:
+                data_pagamento_scanner = st.date_input("Data prevista de pagamento (opcional)", value=None, format="DD/MM/YYYY", key="scanner_ai_data_pagamento_lancar")
             if st.button("🏎️ Lançar na garagem do cliente", key="scanner_ai_lancar_garagem", use_container_width=True):
                 foto_url = upload_storage_loja(foto_para_salvar, s_nome) if foto_para_salvar is not None else ""
                 cliente_sel = mapa_clientes[cliente_label]
-                cadastrar_mini(cliente_sel["id"], s_nome, s_marca, s_serie, s_ano, s_raridade, float(s_valor_pago or 0), float(s_estimado or 0), foto_url, status_lancar, "scanner/admin", s_destaque)
+                cadastrar_mini(cliente_sel["id"], s_nome, s_marca, s_serie, s_ano, s_raridade, float(s_valor_pago or 0), float(s_estimado or 0), foto_url, status_lancar, "scanner/admin", s_destaque, data_pagamento_scanner)
                 try:
                     supabase.table("scanner_logs").insert({
                         "usuario_id": cliente_sel.get("id"),
@@ -4913,6 +5594,16 @@ create table if not exists rifa_numeros (
 
 create unique index if not exists idx_rifa_numero_unico
 on rifa_numeros (rifa_id, numero);
+
+create table if not exists rifa_cartela_nomes (
+    id uuid primary key default gen_random_uuid(),
+    rifa_id uuid not null,
+    nome_cartela text not null,
+    usuario_id text,
+    comprador_nome text,
+    status_pagamento text default 'disponivel',
+    criado_em timestamptz default now()
+);
     """.strip()
 
 
@@ -4922,6 +5613,7 @@ def modo_rifa_label(modo):
         "top_comprador": "💰 Top comprador",
         "top_ganhador": "👑 Top ganhador",
         "hibrida": "🔥 Híbrida",
+        "cartela_sorte": "🍀 Cartela da Sorte",
         "sorteio_top_comprador": "🔥 Híbrida",
         "sorteio_top_ganhador": "🔥 Híbrida",
         "somente_top_comprador": "💰 Top comprador",
@@ -4937,6 +5629,7 @@ def rifa_modo_descricao(modo):
         "top_comprador": "Não sorteia número. Premia quem comprou mais números nesta rifa.",
         "top_ganhador": "Não sorteia número. Premia quem mais venceu no histórico de rifas.",
         "hibrida": "Faz os 3 resultados: sorteio normal + Top comprador + Top ganhador histórico.",
+        "cartela_sorte": "Cartela visual de nomes: o admin preenche os nomes comprados e o sistema sorteia um nome da cartela quando estiver completa.",
         "sorteio_top_comprador": "Compatibilidade: tratado como rifa híbrida.",
         "sorteio_top_ganhador": "Compatibilidade: tratado como rifa híbrida.",
         "somente_top_comprador": "Compatibilidade: tratado como Top comprador.",
@@ -4969,6 +5662,10 @@ def atualizar_rifa(rifa_id, dados):
 def excluir_rifa(rifa_id):
     try:
         supabase.table("rifa_numeros").delete().eq("rifa_id", str(rifa_id)).execute()
+    except Exception:
+        pass
+    try:
+        supabase.table("rifa_cartela_nomes").delete().eq("rifa_id", str(rifa_id)).execute()
     except Exception:
         pass
     supabase.table("rifas").delete().eq("id", rifa_id).execute()
@@ -5373,13 +6070,640 @@ def render_grade_numeros_rifa(rifa, numeros, clientes_por_id):
     """, unsafe_allow_html=True)
 
 
+
+
+# =========================
+# CARTELA DA SORTE — MÓDULO ISOLADO DAS RIFAS NUMÉRICAS
+# =========================
+NOMES_CARTELA_SORTE_PADRAO = [
+    "REGINA", "DÉBORA", "TEREZA", "ÁUREA", "ELVIRA",
+    "ISABEL", "MARGARIDA", "ISAURA", "SELMA", "DULCE",
+    "ZORAIDE", "RAQUEL", "ADRIANA", "SIMONE", "LOURDES",
+    "DOLORES", "ROBERTA", "DIRCE", "NORMA", "DANIELA",
+    "ROSÁLIA", "JOELMA", "GLÓRIA", "FÁTIMA", "ZULEIKA",
+    "JUREMA", "MÔNICA", "HELENA", "EUGÊNIA", "ADELAIDE",
+    "DENISE", "JANDIRA", "ROSANA", "VALÉRIA", "CELESTE",
+    "OLINDA", "EMÍLIA", "JAQUELINE", "ADÉLIA", "PATRÍCIA",
+    "MIRIAM", "CLARICE", "AURORA", "LENICE", "SOLANGE",
+    "IVONE", "MÁRCIA", "DORA", "GRAZIELA", "MARIA",
+    "LUCAS", "JOÃO", "HUMBERTO", "MARCO", "NELSON",
+    "RODRIGO", "CARLOS", "ALEF", "MARCIO", "PAULO",
+    "RENATO", "FERNANDO", "DIEGO", "BRUNO", "GUSTAVO",
+    "RAFAEL", "EDUARDO", "FELIPE", "ANDRÉ", "LEONARDO",
+    "ALEX", "WILLIAM", "JULIO", "MATEUS", "CAIO",
+    "VINICIUS", "THIAGO", "RICARDO", "SÉRGIO", "AUGUSTO",
+    "LUIZ", "MIGUEL", "HENRIQUE", "GABRIEL", "DANILO",
+    "PEDRO", "SAMUEL", "VITOR", "IGOR", "OTÁVIO",
+    "CÉSAR", "WAGNER", "MAURÍCIO", "ROBERTO", "ANTONIO",
+    "FRANCISCO", "JOSÉ", "MARCOS", "ANDERSON", "DOUGLAS",
+]
+
+
+def is_rifa_cartela_sorte(rifa):
+    return str((rifa or {}).get("modo_premiacao") or "").strip().lower() == "cartela_sorte"
+
+
+def buscar_cartela_rifa(rifa_id):
+    try:
+        return (
+            supabase.table("rifa_cartela_nomes")
+            .select("*")
+            .eq("rifa_id", str(rifa_id))
+            .order("criado_em")
+            .execute()
+            .data or []
+        )
+    except Exception:
+        return []
+
+
+def gerar_nomes_cartela_sorte(qtd):
+    qtd = max(1, int(qtd or 50))
+    nomes = list(NOMES_CARTELA_SORTE_PADRAO)
+    if qtd <= len(nomes):
+        return nomes[:qtd]
+    while len(nomes) < qtd:
+        nomes.append(f"NOME {len(nomes) + 1:03d}")
+    return nomes[:qtd]
+
+
+def garantir_cartela_rifa(rifa):
+    """Cria as posições da Cartela da Sorte apenas se ainda não existirem."""
+    rifa_id = rifa.get("id")
+    cartela = buscar_cartela_rifa(rifa_id)
+    if cartela:
+        return cartela
+
+    qtd = int(rifa.get("qtd_numeros") or 50)
+    nomes = gerar_nomes_cartela_sorte(qtd)
+    linhas = [{
+        "rifa_id": str(rifa_id),
+        "nome_cartela": nome,
+        "usuario_id": None,
+        "comprador_nome": None,
+        "status_pagamento": "disponivel",
+    } for nome in nomes]
+
+    try:
+        supabase.table("rifa_cartela_nomes").insert(linhas).execute()
+    except Exception:
+        pass
+
+    return buscar_cartela_rifa(rifa_id)
+
+
+def atualizar_nome_cartela(nome_id, dados):
+    supabase.table("rifa_cartela_nomes").update(dados).eq("id", nome_id).execute()
+
+
+def liberar_nome_cartela(nome_id):
+    atualizar_nome_cartela(nome_id, {
+        "usuario_id": None,
+        "comprador_nome": None,
+        "status_pagamento": "disponivel",
+    })
+
+
+def nome_exibicao_cartela(item, clientes_por_id):
+    comprador = str(item.get("comprador_nome") or "").strip()
+    if comprador:
+        return comprador
+    uid = str(item.get("usuario_id") or "")
+    if uid:
+        return nome_cliente_por_id(clientes_por_id, uid)
+    return ""
+
+
+def render_grade_cartela_rifa(rifa, cartela, clientes_por_id):
+    cartela = cartela or []
+    qtd_total = len(cartela)
+    ocupados = len([c for c in cartela if str(c.get("usuario_id") or "").strip()])
+    disponiveis = max(qtd_total - ocupados, 0)
+    vencedor_nome = str(rifa.get("numero_sorteado") or "")
+    blocos = []
+
+    for idx, item in enumerate(cartela, start=1):
+        nome_base = str(item.get("nome_cartela") or f"NOME {idx}")
+        comprador = nome_exibicao_cartela(item, clientes_por_id)
+        status = str(item.get("status_pagamento") or "disponivel").lower()
+        eh_vencedor = vencedor_nome and vencedor_nome == str(item.get("id"))
+
+        if eh_vencedor:
+            classe = "rifa-num-vencedor"
+        elif not comprador:
+            classe = "rifa-num-disponivel"
+        elif status == "pago":
+            classe = "rifa-num-pago"
+        else:
+            classe = "rifa-num-pendente"
+
+        conteudo = f"<b>{html.escape(nome_base)}</b>"
+        if comprador:
+            conteudo += f"<small>{html.escape(comprador)}</small>"
+        else:
+            conteudo += "<small>Disponível</small>"
+
+        tooltip = f"{nome_base} — {status} — {comprador or 'disponível'}"
+        blocos.append(f'<div class="rifa-cartela-nome {classe}" title="{html.escape(tooltip, quote=True)}">{conteudo}</div>')
+
+    st.markdown(f"""
+    <style>
+    .rifa-cartela-grid {{ display:grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap:8px; }}
+    .rifa-cartela-nome {{ min-height:68px; border-radius:14px; padding:8px 6px; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; border:1px solid rgba(255,255,255,.12); box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 8px 18px rgba(0,0,0,.20); }}
+    .rifa-cartela-nome b {{ font-size:13px; letter-spacing:.3px; }}
+    .rifa-cartela-nome small {{ margin-top:4px; font-size:11px; font-weight:900; opacity:.92; }}
+    @media (max-width: 720px) {{ .rifa-cartela-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }} }}
+    </style>
+    <div class="rifa-grid-card">
+        <div class="rifa-grid-head">
+            <div>
+                <h3>🍀 Cartela da Sorte</h3>
+                <p>{ocupados}/{qtd_total} nomes preenchidos • {disponiveis} disponíveis</p>
+            </div>
+            <div class="rifa-legenda">
+                <span><i class="rifa-dot disponivel"></i>Disponível</span>
+                <span><i class="rifa-dot pago"></i>Pago</span>
+                <span><i class="rifa-dot pendente"></i>Pendente/Reservado</span>
+                <span><i class="rifa-dot vencedor"></i>Vencedor</span>
+            </div>
+        </div>
+        <div class="rifa-cartela-grid">
+            {''.join(blocos)}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def processar_resultado_cartela_sorte(rifa, cartela, clientes):
+    clientes_por_id = {str(c.get("id")): c for c in clientes}
+    elegiveis = [c for c in (cartela or []) if str(c.get("usuario_id") or "").strip() and str(c.get("status_pagamento") or "").lower() in ["pago", "reservado", "pendente"]]
+    if not elegiveis:
+        return False, "Não há nomes preenchidos na cartela para sortear."
+
+    escolhido = random.choice(elegiveis)
+    vencedor_uid = str(escolhido.get("usuario_id") or "")
+    nome_cartela = str(escolhido.get("nome_cartela") or "Nome")
+    vencedor_nome = nome_cliente_por_id(clientes_por_id, vencedor_uid)
+    resultado = f"🍀 Cartela da Sorte: nome sorteado {nome_cartela} — vencedor: {vencedor_nome}"
+
+    try:
+        atualizar_rifa(rifa.get("id"), {
+            "status": "sorteada",
+            "numero_sorteado": None,
+            "vencedor_usuario_id": vencedor_uid,
+            "resultado_texto": resultado,
+        })
+    except Exception:
+        atualizar_rifa(rifa.get("id"), {"status": "sorteada", "resultado_texto": resultado})
+
+    return True, resultado, nome_cartela, vencedor_nome
+
+
+def render_popup_sorteio_cartela():
+    """Popup central para o resultado da Cartela da Sorte. Não altera banco."""
+    dados = st.session_state.get("popup_sorteio_cartela") or {}
+    if not dados:
+        return
+
+    nome_sorteado = html.escape(str(dados.get("nome_cartela") or "Nome sorteado"))
+    vencedor_nome = html.escape(str(dados.get("vencedor_nome") or "Vencedor"))
+    titulo_rifa = html.escape(str(dados.get("titulo") or "Cartela da Sorte"))
+
+    def conteudo_popup():
+        st.markdown(f"""
+        <style>
+        .garagehub-popup-sorteio {{
+            text-align:center;
+            padding:18px 10px 8px;
+        }}
+        .garagehub-popup-sorteio .trofeu {{
+            font-size:56px;
+            line-height:1;
+            margin-bottom:8px;
+        }}
+        .garagehub-popup-sorteio h1 {{
+            color:#facc15;
+            margin:0 0 6px;
+            font-size:32px;
+            font-weight:950;
+        }}
+        .garagehub-popup-sorteio .sub {{
+            color:#cbd5e1;
+            font-weight:800;
+            margin-bottom:18px;
+        }}
+        .garagehub-popup-sorteio .box {{
+            border:1px solid rgba(250,204,21,.45);
+            background:linear-gradient(145deg, rgba(15,23,42,.96), rgba(2,6,23,.98));
+            border-radius:24px;
+            padding:18px;
+            margin:12px 0;
+            box-shadow:0 18px 45px rgba(0,0,0,.35), 0 0 28px rgba(250,204,21,.12);
+        }}
+        .garagehub-popup-sorteio small {{
+            color:#94a3b8;
+            text-transform:uppercase;
+            letter-spacing:.12em;
+            font-weight:950;
+        }}
+        .garagehub-popup-sorteio .nome {{
+            color:#f8fafc;
+            font-size:34px;
+            font-weight:1000;
+            margin-top:4px;
+        }}
+        .garagehub-popup-sorteio .vencedor {{
+            color:#22c55e;
+            font-size:30px;
+            font-weight:1000;
+            margin-top:4px;
+        }}
+        </style>
+        <div class="garagehub-popup-sorteio">
+            <div class="trofeu">🏆</div>
+            <h1>🍀 CARTELA DA SORTE</h1>
+            <div class="sub">{titulo_rifa}</div>
+            <div class="box">
+                <small>Nome sorteado</small>
+                <div class="nome">{nome_sorteado}</div>
+            </div>
+            <div class="box">
+                <small>Vencedor</small>
+                <div class="vencedor">{vencedor_nome}</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("✅ Fechar resultado", key="fechar_popup_sorteio_cartela", use_container_width=True):
+            st.session_state.pop("popup_sorteio_cartela", None)
+            st.rerun()
+
+    if hasattr(st, "dialog"):
+        @st.dialog("🏁 Resultado oficial do sorteio")
+        def _dialog_resultado():
+            conteudo_popup()
+        _dialog_resultado()
+    else:
+        conteudo_popup()
+
+
+def render_admin_cartela_sorte_bloco(rifa, clientes, clientes_por_id, rifas):
+    rifa_id = rifa.get("id")
+
+    popup_atual = st.session_state.get("popup_sorteio_cartela") or {}
+    if str(popup_atual.get("rifa_id") or "") == str(rifa_id):
+        render_popup_sorteio_cartela()
+
+    cartela = garantir_cartela_rifa(rifa)
+    qtd_total = len(cartela)
+    ocupados = len([c for c in cartela if str(c.get("usuario_id") or "").strip()])
+    pagos = len([c for c in cartela if str(c.get("status_pagamento") or "").lower() == "pago"])
+    disponiveis = max(qtd_total - ocupados, 0)
+    arrecadado = pagos * float(rifa.get("valor_numero") or 0)
+    progresso = int((ocupados / qtd_total) * 100) if qtd_total else 0
+
+    foto = get_foto_item({"foto_url": rifa.get("premio_foto_url")})
+    img = imagem_html(foto, "market-img") if foto else '<div class="market-empty">🍀</div>'
+    status = html.escape(str(rifa.get("status") or "aberta"))
+
+    st.markdown(f"""
+    <div class="market-card hall-glow">
+        {img}
+        <div class="market-body">
+            <div class="favorite-chip">🍀</div>
+            <h3 class="market-name">{html.escape(str(rifa.get('titulo') or 'Cartela da Sorte'))}</h3>
+            <div class="market-tags">
+                <span class="market-tag market-tag-vip">🍀 Cartela da Sorte</span>
+                <span class="market-tag market-tag-ok">{status}</span>
+            </div>
+            <p class="market-line"><b>Prêmio:</b> {html.escape(str(rifa.get('premio_nome') or '-'))}</p>
+            <p class="market-line"><b>Descrição:</b> {html.escape(str(rifa.get('descricao') or '-'))}</p>
+            <p class="market-line"><b>Como funciona:</b> o cliente reserva nomes na cartela; o admin confirma o pagamento e depois sorteia um nome preenchido.</p>
+            <div class="market-price-grid">
+                <div class="market-price"><small>Nomes</small><strong>{ocupados}/{qtd_total}</strong></div>
+                <div class="market-price"><small>Disponíveis</small><strong>{disponiveis}</strong></div>
+                <div class="market-price"><small>Arrecadado pago</small><strong>{money(arrecadado)}</strong></div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.progress(min(progresso, 100), text=f"{progresso}% da cartela preenchida")
+
+    col_refresh_cartela, col_refresh_cartela_txt = st.columns([1, 4])
+    with col_refresh_cartela:
+        if st.button("🔄 Atualizar cartela", key=f"admin_refresh_cartela_{rifa_id}", use_container_width=True):
+            st.rerun()
+    with col_refresh_cartela_txt:
+        st.caption("Atualiza os nomes reservados pelos clientes nesta Cartela da Sorte.")
+
+    render_grade_cartela_rifa(rifa, cartela, clientes_por_id)
+
+    if rifa.get("resultado_texto"):
+        st.markdown(resultado_rifa_html(rifa, clientes_por_id), unsafe_allow_html=True)
+
+    with st.expander(f"⚙️ Gerenciar Cartela da Sorte — {rifa.get('titulo')}", expanded=False):
+        if not clientes:
+            st.warning("Cadastre clientes antes de preencher a cartela.")
+        else:
+            mapa_clientes = {f"{c.get('nome','')} — {c.get('email','')}": c for c in clientes}
+            disponiveis_itens = [c for c in cartela if not str(c.get("usuario_id") or "").strip()]
+            opcoes = {f"{idx:02d} - {c.get('nome_cartela')}": c for idx, c in enumerate(disponiveis_itens, start=1)}
+
+            cc1, cc2 = st.columns([2, 1])
+            with cc1:
+                cliente_label = st.selectbox("Cliente comprador", list(mapa_clientes.keys()), key=f"cartela_cliente_{rifa_id}")
+            with cc2:
+                status_compra = st.selectbox("Status", ["pago", "pendente", "reservado"], key=f"cartela_status_{rifa_id}")
+
+            nomes_escolhidos = st.multiselect(
+                "Nomes da cartela para este cliente",
+                list(opcoes.keys()),
+                key=f"cartela_nomes_{rifa_id}",
+                help="Escolha um ou mais nomes disponíveis da cartela."
+            )
+
+            if st.button("➕ Lançar nomes para cliente", key=f"cartela_lancar_{rifa_id}", use_container_width=True):
+                if not nomes_escolhidos:
+                    st.warning("Escolha pelo menos um nome disponível.")
+                else:
+                    cliente_sel = mapa_clientes[cliente_label]
+                    for label in nomes_escolhidos:
+                        item = opcoes[label]
+                        atualizar_nome_cartela(item.get("id"), {
+                            "usuario_id": str(cliente_sel.get("id")),
+                            "comprador_nome": cliente_sel.get("nome") or "Cliente",
+                            "status_pagamento": status_compra,
+                        })
+                    st.success(f"{len(nomes_escolhidos)} nome(s) lançado(s) na cartela.")
+                    st.rerun()
+
+        if cartela:
+            st.markdown("#### Nomes preenchidos")
+            linhas = []
+            for idx, c in enumerate(cartela, start=1):
+                linhas.append({
+                    "Posição": idx,
+                    "Nome da cartela": c.get("nome_cartela"),
+                    "Comprador": nome_exibicao_cartela(c, clientes_por_id) or "Disponível",
+                    "Status": c.get("status_pagamento") or "disponivel",
+                })
+            st.dataframe(linhas, use_container_width=True, hide_index=True)
+
+            st.markdown("#### ✅ Confirmação de pagamento em lote")
+            grupos = {}
+            for c in cartela:
+                uid = str(c.get("usuario_id") or "")
+                if not uid:
+                    continue
+                status_atual = str(c.get("status_pagamento") or "pendente").lower()
+                grupos.setdefault((uid, status_atual), []).append(c)
+
+            for idx_grupo, ((uid, status_atual), itens) in enumerate(grupos.items()):
+                nome_cliente = nome_cliente_por_id(clientes_por_id, uid)
+                nomes_txt = ", ".join(str(i.get("nome_cartela")) for i in itens[:50])
+                valor_grupo = len(itens) * float(rifa.get("valor_numero") or 0)
+                st.markdown(f"""
+                <div class="pro-card hall-glow">
+                    <h3>👤 {html.escape(str(nome_cliente))}</h3>
+                    <p><strong>{len(itens)}</strong> nome(s) • Status atual: <strong>{html.escape(status_atual)}</strong><br>
+                    Valor previsto: <strong>{money(valor_grupo)}</strong><br>Nomes: {html.escape(nomes_txt)}</p>
+                </div>
+                """, unsafe_allow_html=True)
+                g1, g2, g3 = st.columns(3)
+                with g1:
+                    if st.button("✅ Marcar lote como pago", key=f"cartela_pago_{rifa_id}_{uid}_{status_atual}_{idx_grupo}", use_container_width=True):
+                        for item in itens:
+                            atualizar_nome_cartela(item.get("id"), {"status_pagamento": "pago"})
+                        st.success("Lote marcado como pago.")
+                        st.rerun()
+                with g2:
+                    if st.button("🔵 Voltar para reservado", key=f"cartela_reservado_{rifa_id}_{uid}_{status_atual}_{idx_grupo}", use_container_width=True):
+                        for item in itens:
+                            atualizar_nome_cartela(item.get("id"), {"status_pagamento": "reservado"})
+                        st.success("Lote marcado como reservado.")
+                        st.rerun()
+                with g3:
+                    confirmar_liberar = st.checkbox("Confirmar liberação", key=f"cartela_conf_lib_{rifa_id}_{uid}_{status_atual}_{idx_grupo}")
+                    if st.button("🗑️ Liberar nomes", key=f"cartela_liberar_{rifa_id}_{uid}_{status_atual}_{idx_grupo}", use_container_width=True):
+                        if not confirmar_liberar:
+                            st.warning("Marque a confirmação antes de liberar.")
+                        else:
+                            for item in itens:
+                                liberar_nome_cartela(item.get("id"))
+                            st.success("Nomes liberados.")
+                            st.rerun()
+
+        st.divider()
+        st.markdown("### 🍀 Área oficial do sorteio da cartela")
+        if str(rifa.get("status") or "") == "sorteada":
+            st.success("Esta cartela já foi sorteada. O resultado oficial está gravado acima.")
+        elif disponiveis > 0:
+            st.warning(f"A cartela ainda possui {disponiveis} nome(s) disponível(is). O sorteio é liberado quando a cartela estiver completa.")
+
+        confirmar_sorteio = st.checkbox("Confirmo que quero sortear esta cartela agora", key=f"cartela_confirmar_sorteio_{rifa_id}")
+        ac1, ac2, ac3 = st.columns(3)
+        with ac1:
+            if st.button("🍀 Sortear Cartela agora", key=f"cartela_sortear_{rifa_id}", use_container_width=True, disabled=(str(rifa.get("status")) == "sorteada" or not confirmar_sorteio or disponiveis > 0)):
+                resultado_cartela = processar_resultado_cartela_sorte(rifa, buscar_cartela_rifa(rifa_id), clientes)
+                ok = resultado_cartela[0]
+                msg = resultado_cartela[1]
+                if ok:
+                    nome_sorteado = resultado_cartela[2] if len(resultado_cartela) > 2 else "Nome sorteado"
+                    vencedor_nome = resultado_cartela[3] if len(resultado_cartela) > 3 else "Vencedor"
+                    st.session_state["popup_sorteio_cartela"] = {
+                        "rifa_id": str(rifa_id),
+                        "titulo": str(rifa.get("titulo") or "Cartela da Sorte"),
+                        "nome_cartela": nome_sorteado,
+                        "vencedor_nome": vencedor_nome,
+                        "resultado": msg,
+                    }
+                    st.balloons()
+                    st.rerun()
+                else:
+                    st.warning(msg)
+        with ac2:
+            novo_status = st.selectbox("Alterar status", ["aberta", "pausada", "encerrada", "sorteada"], index=["aberta", "pausada", "encerrada", "sorteada"].index(str(rifa.get("status") or "aberta")) if str(rifa.get("status") or "aberta") in ["aberta", "pausada", "encerrada", "sorteada"] else 0, key=f"cartela_novo_status_{rifa_id}")
+            if st.button("💾 Salvar status", key=f"cartela_salvar_status_{rifa_id}", use_container_width=True):
+                atualizar_rifa(rifa_id, {"status": novo_status})
+                st.success("Status atualizado.")
+                st.rerun()
+        with ac3:
+            confirmar = st.checkbox("Confirmar exclusão", key=f"cartela_confirmar_excluir_{rifa_id}")
+            if st.button("🗑️ Excluir cartela", key=f"cartela_excluir_{rifa_id}", use_container_width=True):
+                if not confirmar:
+                    st.warning("Confirme antes de excluir.")
+                else:
+                    excluir_rifa(rifa_id)
+                    st.success("Cartela excluída.")
+                    st.rerun()
+
+
+def render_cliente_cartela_sorte_bloco(rifa, usuario, clientes_por_id):
+    rifa_id = rifa.get("id")
+    cartela = garantir_cartela_rifa(rifa)
+    qtd_total = len(cartela)
+    ocupados = len([c for c in cartela if str(c.get("usuario_id") or "").strip()])
+    pagos = len([c for c in cartela if str(c.get("status_pagamento") or "").lower() == "pago"])
+    disponiveis = max(qtd_total - ocupados, 0)
+    progresso = int((ocupados / qtd_total) * 100) if qtd_total else 0
+    meus_nomes = [c for c in cartela if str(c.get("usuario_id")) == str(usuario.get("id"))]
+    valor_total_cliente = len(meus_nomes) * float(rifa.get("valor_numero") or 0)
+
+    foto = get_foto_item({"foto_url": rifa.get("premio_foto_url")})
+    img = imagem_html(foto, "market-img") if foto else '<div class="market-empty">🍀</div>'
+    status = html.escape(str(rifa.get("status") or "aberta"))
+
+    st.markdown(f"""
+    <div class="market-card hall-glow">
+        {img}
+        <div class="market-body">
+            <div class="favorite-chip">🍀</div>
+            <h3 class="market-name">{html.escape(str(rifa.get('titulo') or 'Cartela da Sorte'))}</h3>
+            <div class="market-tags">
+                <span class="market-tag market-tag-vip">🍀 Cartela da Sorte</span>
+                <span class="market-tag market-tag-ok">{status}</span>
+            </div>
+            <p class="market-line"><b>Prêmio:</b> {html.escape(str(rifa.get('premio_nome') or '-'))}</p>
+            <p class="market-line"><b>Descrição:</b> {html.escape(str(rifa.get('descricao') or '-'))}</p>
+            <p class="market-line"><b>Como funciona:</b> quando a cartela estiver completa, o sistema sorteia um nome preenchido.</p>
+            <div class="market-price-grid">
+                <div class="market-price"><small>Valor por nome</small><strong>{money(rifa.get('valor_numero') or 0)}</strong></div>
+                <div class="market-price"><small>Nomes</small><strong>{ocupados}/{qtd_total}</strong></div>
+                <div class="market-price"><small>Disponíveis</small><strong>{disponiveis}</strong></div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.progress(min(progresso, 100), text=f"{progresso}% da cartela preenchida")
+    st.markdown(f"""
+    <div class="pro-grid">
+        <div class="pro-card hall-glow"><h3>🍀 Seus nomes</h3><p><strong>{len(meus_nomes)}</strong><br>Nomes vinculados a você nesta cartela.</p></div>
+        <div class="pro-card hall-glow"><h3>💰 Total investido</h3><p><strong>{money(valor_total_cliente)}</strong><br>Valor total dos seus nomes.</p></div>
+        <div class="pro-card hall-glow"><h3>✅ Pagos confirmados</h3><p><strong>{pagos}</strong><br>Nomes pagos na cartela inteira.</p></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if meus_nomes:
+        st.success("Seus nomes nesta cartela: " + ", ".join(str(c.get("nome_cartela")) for c in meus_nomes))
+    else:
+        st.info("Você ainda não possui nomes nesta cartela. Escolha abaixo um ou mais nomes disponíveis para reservar.")
+
+    # Cliente escolhe os próprios nomes da Cartela da Sorte.
+    # Mantém o admin como responsável por confirmar pagamento depois.
+    pode_reservar_cartela = str(rifa.get("status") or "").lower() == "aberta"
+    disponiveis_cliente = [c for c in cartela if not str(c.get("usuario_id") or "").strip()]
+
+    with st.expander("🍀 Escolher meus nomes na Cartela da Sorte", expanded=bool(disponiveis_cliente and pode_reservar_cartela)):
+        if not pode_reservar_cartela:
+            st.warning("Esta cartela não está aberta para novas reservas.")
+        elif not disponiveis_cliente:
+            st.warning("Esta cartela já está completa. Aguarde o sorteio.")
+        else:
+            opcoes_cliente = {
+                f"{idx:02d} - {c.get('nome_cartela')}": c
+                for idx, c in enumerate(disponiveis_cliente, start=1)
+            }
+            nomes_escolhidos_cliente = st.multiselect(
+                "Escolha um ou mais nomes disponíveis",
+                list(opcoes_cliente.keys()),
+                key=f"cliente_cartela_nomes_{rifa_id}",
+                help="Após reservar, o admin confirma o pagamento e muda o status para pago."
+            )
+            valor_reserva_cliente = len(nomes_escolhidos_cliente) * float(rifa.get("valor_numero") or 0)
+            st.metric("Total da reserva", money(valor_reserva_cliente))
+
+            if st.button("🍀 Reservar meus nomes", key=f"cliente_cartela_reservar_{rifa_id}", use_container_width=True):
+                if not nomes_escolhidos_cliente:
+                    st.warning("Escolha pelo menos um nome disponível.")
+                else:
+                    cliente_nome = str(usuario.get("nome") or usuario.get("email") or "Cliente")
+                    reservados = 0
+                    falhas = 0
+                    for label in nomes_escolhidos_cliente:
+                        item = opcoes_cliente.get(label)
+                        if not item:
+                            falhas += 1
+                            continue
+                        try:
+                            # Atualiza apenas se ainda estiver disponível, evitando conflito se dois clientes clicarem ao mesmo tempo.
+                            resp = (
+                                supabase.table("rifa_cartela_nomes")
+                                .update({
+                                    "usuario_id": str(usuario.get("id")),
+                                    "comprador_nome": cliente_nome,
+                                    "status_pagamento": "reservado",
+                                })
+                                .eq("id", item.get("id"))
+                                .is_("usuario_id", "null")
+                                .execute()
+                            )
+                            if getattr(resp, "data", None):
+                                reservados += 1
+                            else:
+                                falhas += 1
+                        except Exception:
+                            try:
+                                # Fallback para ambientes onde o filtro IS NULL do client não funcione como esperado.
+                                item_atual = buscar_cartela_rifa(rifa_id)
+                                ainda_livre = next((x for x in item_atual if str(x.get("id")) == str(item.get("id")) and not str(x.get("usuario_id") or "").strip()), None)
+                                if ainda_livre:
+                                    atualizar_nome_cartela(item.get("id"), {
+                                        "usuario_id": str(usuario.get("id")),
+                                        "comprador_nome": cliente_nome,
+                                        "status_pagamento": "reservado",
+                                    })
+                                    reservados += 1
+                                else:
+                                    falhas += 1
+                            except Exception:
+                                falhas += 1
+
+                    if reservados:
+                        st.success(f"{reservados} nome(s) reservado(s) com sucesso. Aguarde o admin confirmar o pagamento.")
+                    if falhas:
+                        st.warning(f"{falhas} nome(s) não foram reservados porque podem ter sido escolhidos por outro cliente. Atualize e tente novamente.")
+                    st.rerun()
+
+    render_grade_cartela_rifa(rifa, buscar_cartela_rifa(rifa_id), clientes_por_id)
+
+    if rifa.get("resultado_texto"):
+        st.markdown(resultado_rifa_html(rifa, clientes_por_id), unsafe_allow_html=True)
+
+    with st.expander("📋 Resumo da cartela", expanded=False):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.metric("Pagos", pagos)
+        with c2:
+            st.metric("Preenchidos", ocupados)
+        with c3:
+            st.metric("Disponíveis", disponiveis)
+
+        linhas = []
+        for idx, c in enumerate(cartela, start=1):
+            linhas.append({
+                "Posição": idx,
+                "Nome": c.get("nome_cartela"),
+                "Status": c.get("status_pagamento") or "disponivel",
+                "Cliente": nome_exibicao_cartela(c, clientes_por_id) or "Disponível",
+            })
+        st.dataframe(linhas, use_container_width=True, hide_index=True)
+
 def render_rifas_admin(clientes):
     st.markdown("""
     <div class="admin-work-card">
         <h3>🎟️ Rifas Automáticas GarageHub</h3>
-        <p>Crie rifas no modo Normal, Top comprador, Top ganhador ou Híbrida, com mapa visual de números.</p>
+        <p>Crie rifas no modo Normal, Top comprador, Top ganhador, Híbrida ou Cartela da Sorte, sem alterar as rifas existentes.</p>
     </div>
     """, unsafe_allow_html=True)
+
+    col_refresh_rifas, col_refresh_txt = st.columns([1, 4])
+    with col_refresh_rifas:
+        if st.button("🔄 Atualizar rifas", key="admin_refresh_rifas_geral", use_container_width=True):
+            st.rerun()
+    with col_refresh_txt:
+        st.caption("Atualiza rifas, cartelas e reservas de nomes feitas pelos clientes, sem precisar apertar F5.")
 
     try:
         rifas = buscar_rifas()
@@ -5397,6 +6721,7 @@ def render_rifas_admin(clientes):
         <div class="feature-card"><h3>💰 Top comprador</h3><p>Sem sorteio: vence quem comprou mais números.</p></div>
         <div class="feature-card"><h3>👑 Top ganhador</h3><p>Sem sorteio: vence quem lidera o histórico de vitórias.</p></div>
         <div class="feature-card"><h3>🔥 Híbrida</h3><p>Sorteio normal + Top comprador + Top ganhador.</p></div>
+        <div class="feature-card"><h3>🍀 Cartela da Sorte</h3><p>Cartela visual de nomes, igual à cartela física.</p></div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -5418,6 +6743,7 @@ def render_rifas_admin(clientes):
                     "💰 Top comprador": "top_comprador",
                     "👑 Top ganhador": "top_ganhador",
                     "🔥 Híbrida": "hibrida",
+                    "🍀 Cartela da Sorte": "cartela_sorte",
                 }
                 r_modo_label = st.selectbox("Modo de premiação", list(modos.keys()), key="rifa_modo")
                 r_status = st.selectbox("Status", ["aberta", "pausada", "encerrada"], key="rifa_status")
@@ -5455,6 +6781,9 @@ def render_rifas_admin(clientes):
 
     for rifa in rifas:
         rifa_id = rifa.get("id")
+        if is_rifa_cartela_sorte(rifa):
+            render_admin_cartela_sorte_bloco(rifa, clientes, clientes_por_id, rifas)
+            continue
         try:
             numeros = buscar_numeros_rifa(rifa_id)
         except Exception:
@@ -5730,6 +7059,7 @@ def render_rifas_cliente(usuario):
             <div class="market-stat"><strong>🎲</strong><small>sorteio normal</small></div>
             <div class="market-stat"><strong>💰</strong><small>top comprador</small></div>
             <div class="market-stat"><strong>👑</strong><small>top ganhador</small></div>
+            <div class="market-stat"><strong>🍀</strong><small>cartela da sorte</small></div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -5766,6 +7096,9 @@ def render_rifas_cliente(usuario):
 
     for rifa in rifas_visiveis:
         rifa_id = rifa.get("id")
+        if is_rifa_cartela_sorte(rifa):
+            render_cliente_cartela_sorte_bloco(rifa, usuario, clientes_por_id)
+            continue
 
         try:
             numeros = buscar_numeros_rifa_fresco(rifa_id)
@@ -6234,6 +7567,8 @@ else:
             </div>
         </div>
         """, unsafe_allow_html=True)
+
+        render_alertas_financeiros_admin(todas_minis, clientes)
 
         aba_clientes, aba_loja, aba_pre_venda_admin, aba_pedidos, aba_minis, aba_financeiro, aba_hall_admin, aba_ranking_admin, aba_timeline_admin, aba_sorteios_admin, aba_lab_admin, aba_exec_admin, aba_checkout_admin, aba_notif_admin = st.tabs([
             "👥 Clientes",
@@ -6739,7 +8074,10 @@ else:
                             raridade_mini = st.selectbox("Raridade", ["Comum", "TH", "STH", "Premium", "RLC", "Chase", "Especial"], key="adm_mini_raridade")
                             valor_pago_mini = st.number_input("Valor pago", min_value=0.0, step=1.0, key="adm_mini_valor_pago")
                             valor_estimado_mini = st.number_input("Valor estimado", min_value=0.0, step=1.0, key="adm_mini_valor_estimado")
-                            status_pagamento = st.selectbox("Status pagamento", ["pendente", "pago", "reservado", "cancelado"], key="adm_status_pagamento")
+                            status_pagamento = st.selectbox("Status pagamento", ["pendente", "pago", "reservado", "pre_datado", "cancelado"], key="adm_status_pagamento")
+                            data_pagamento_prevista = None
+                            if status_pagamento in ["pendente", "reservado", "pre_datado"]:
+                                data_pagamento_prevista = st.date_input("Data prevista de pagamento (opcional)", value=None, format="DD/MM/YYYY", key="adm_data_pagamento_prevista")
                             tipo_mini = st.selectbox("Tipo", ["compra", "presente", "premio", "vip"], key="adm_tipo_mini")
                             destaque_cliente = st.selectbox("Destaque", ["", "Top comprador", "Top ganhador", "Cliente VIP"], key="adm_destaque_cliente")
 
@@ -6752,7 +8090,7 @@ else:
                                 cadastrar_mini(
                                     cliente_sel["id"], nome_mini, marca_mini, serie_mini, ano_mini, raridade_mini,
                                     valor_pago_mini, valor_estimado_mini, foto_url,
-                                    status_pagamento, tipo_mini, destaque_cliente
+                                    status_pagamento, tipo_mini, destaque_cliente, data_pagamento_prevista
                                 )
                                 st.success("Mini lançada na garagem do cliente.")
                                 st.rerun()
@@ -6844,6 +8182,13 @@ else:
                             sts = ["pendente", "pago", "reservado", "cancelado"]
                             atual_st = mini_edit.get("status_pagamento") or "pendente"
                             e_status = st.selectbox("Status pagamento", sts, index=sts.index(atual_st) if atual_st in sts else 0, key=f"adm_e_status_{mini_edit['id']}")
+                            e_data_pagamento = st.text_input(
+                                "Data prevista de pagamento (opcional)",
+                                value=formatar_data_input_br(mini_edit.get("data_pagamento_prevista")),
+                                placeholder="DD/MM/AAAA — deixe em branco para remover",
+                                key=f"adm_e_data_pagamento_{mini_edit['id']}",
+                                help="Para retirar a data prevista, apague o campo e salve."
+                            )
 
                             tipos = ["compra", "presente", "premio", "vip"]
                             atual_tipo = mini_edit.get("tipo_mini") or "compra"
@@ -6877,6 +8222,7 @@ else:
                                 "status_pagamento": e_status,
                                 "tipo_mini": e_tipo,
                                 "destaque_cliente": e_destaque,
+                                "data_pagamento_prevista": data_pagamento_para_banco(e_data_pagamento),
                             }
 
                             try:
@@ -6885,6 +8231,7 @@ else:
                                 dados.pop("status_pagamento", None)
                                 dados.pop("tipo_mini", None)
                                 dados.pop("destaque_cliente", None)
+                                dados.pop("data_pagamento_prevista", None)
                                 atualizar_mini(mini_edit["id"], dados)
 
                             st.success("Mini atualizada com sucesso.")
@@ -7606,6 +8953,9 @@ else:
                                 status_pagamento = limpar_campo_visual(mini.get("status_pagamento"), "pendente").upper()
                                 tipo_mini = limpar_campo_visual(mini.get("tipo_mini"), "compra").upper()
                                 destaque_cliente = limpar_campo_visual(mini.get("destaque_cliente"), "")
+                                resumo_pv_cliente = resumo_pre_venda_mini_garagem(mini) if is_mini_pre_venda(mini) else None
+                                if resumo_pv_cliente:
+                                    destaque_cliente = limpar_destaque_pre_venda_visual(mini)
                                 valor_pago = float(mini.get("valor_pago") or 0)
                                 valor_estimado = float(mini.get("valor_estimado") or 0)
                                 valorizacao = valor_estimado - valor_pago
@@ -7644,6 +8994,17 @@ else:
                                         badge_html += f'<span class="badge-destaque">{html.escape(destaque_cliente)}</span>'
 
                                     st.markdown(badge_html, unsafe_allow_html=True)
+
+                                    if resumo_pv_cliente:
+                                        st.markdown(f"""
+                                        <div class="user-info-grid" style="margin-top:14px;">
+                                            <div class="user-info-item"><small>Qtd. solicitada</small><strong>{int(resumo_pv_cliente.get('quantidade') or 1)}</strong></div>
+                                            <div class="user-info-item"><small>Total da reserva</small><strong>{money(resumo_pv_cliente.get('valor_total') or 0)}</strong></div>
+                                            <div class="user-info-item"><small>Sinal pago</small><strong>{money(resumo_pv_cliente.get('valor_sinal') or 0)}</strong></div>
+                                            <div class="user-info-item"><small>Restante</small><strong>{money(resumo_pv_cliente.get('valor_restante') or 0)}</strong></div>
+                                            <div class="user-info-item"><small>Status</small><strong>{html.escape(texto_status_reserva(resumo_pv_cliente.get('status_reserva') or ''))}</strong></div>
+                                        </div>
+                                        """, unsafe_allow_html=True)
 
                                     st.markdown(f"**Marca:** {html.escape(marca)}")
                                     st.markdown(f"**Série:** {html.escape(serie)}")

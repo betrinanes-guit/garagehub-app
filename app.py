@@ -8090,6 +8090,28 @@ else:
                             </div>
                             """, unsafe_allow_html=True)
 
+                            del_col1, del_col2, del_col3 = st.columns([1.4, 1, 2.6])
+                            with del_col1:
+                                confirmar_excluir_item_loja = st.checkbox(
+                                    "Confirmar exclusão",
+                                    key=f"admin_conf_excluir_loja_card_{item.get('id')}"
+                                )
+                            with del_col2:
+                                if st.button(
+                                    "🗑️ Deletar",
+                                    key=f"admin_excluir_loja_card_{item.get('id')}",
+                                    use_container_width=True
+                                ):
+                                    if not confirmar_excluir_item_loja:
+                                        st.warning("Marque confirmar exclusão para deletar esta mini da loja.")
+                                    else:
+                                        try:
+                                            excluir_loja_mini(item.get("id"))
+                                            st.success("Mini deletada da loja.")
+                                            st.rerun()
+                                        except Exception as e:
+                                            st.error(f"Não foi possível deletar esta mini da loja. Erro: {e}")
+
         # =========================
         # ABA PRÉ-VENDA
         # =========================

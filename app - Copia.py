@@ -951,6 +951,117 @@ def render_alertas_financeiros_admin(minis, clientes, limite=12):
 
 
 
+def render_geral_pendencias_admin(minis, clientes):
+    """Mostra para o admin um geral de TODOS os clientes que têm qualquer pendência financeira."""
+    clientes_por_id = {str(c.get("id")): c for c in (clientes or [])}
+
+    status_quitados = [
+        "pago",
+        "concluido",
+        "concluído",
+        "cancelado",
+        "incluido_na_garagem",
+        "incluído_na_garagem",
+    ]
+
+    linhas = []
+    total_em_aberto = 0.0
+    clientes_com_pendencia = set()
+
+    for mini in minis or []:
+        status = str(mini.get("status_pagamento") or "").strip().lower()
+        data_venc = normalizar_data_pagamento_prevista(mini.get("data_pagamento_prevista"))
+
+        # Considera pendência quando:
+        # 1) existe status diferente de pago/concluído/cancelado; ou
+        # 2) existe data prevista de pagamento em mini ainda não quitada.
+        tem_status_pendente = bool(status) and status not in status_quitados
+        tem_data_pendente = data_venc is not None and status not in status_quitados
+
+        if not tem_status_pendente and not tem_data_pendente:
+            continue
+
+        cliente_id = str(mini.get("usuario_id"))
+        cliente = clientes_por_id.get(cliente_id, {})
+        clientes_com_pendencia.add(cliente_id)
+
+        valor = float(mini.get("valor_pago") or 0)
+        total_em_aberto += valor
+
+        situacao = "Pendente"
+        dias_atraso = ""
+
+        if data_venc:
+            hoje = date.today()
+            if data_venc < hoje:
+                situacao = "Vencido"
+                dias_atraso = (hoje - data_venc).days
+            elif data_venc == hoje:
+                situacao = "Vence hoje"
+                dias_atraso = 0
+            elif data_venc == hoje + timedelta(days=1):
+                situacao = "Vence amanhã"
+                dias_atraso = 0
+            else:
+                situacao = "A vencer"
+                dias_atraso = 0
+
+        linhas.append({
+            "Cliente": cliente.get("nome") or "Cliente não identificado",
+            "E-mail": cliente.get("email") or "-",
+            "Mini": mini.get("nome") or "-",
+            "Marca": mini.get("marca") or "-",
+            "Valor": money(valor),
+            "Status": status_label(mini.get("status_pagamento") or "pendente"),
+            "Vencimento": formatar_data_br(mini.get("data_pagamento_prevista")),
+            "Situação": situacao,
+            "Dias em atraso": dias_atraso,
+        })
+
+    ordem_situacao = {
+        "Vencido": 0,
+        "Vence hoje": 1,
+        "Vence amanhã": 2,
+        "A vencer": 3,
+        "Pendente": 4,
+    }
+    linhas = sorted(linhas, key=lambda x: (ordem_situacao.get(x.get("Situação"), 9), str(x.get("Cliente") or ""), str(x.get("Mini") or "")))
+
+    st.markdown("""
+    <div class="admin-work-card">
+        <h3>🔴 Geral de pendências dos clientes</h3>
+        <p>Visão consolidada para o admin: todos os clientes com minis pendentes, vencimentos, status e valores em aberto.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if not linhas:
+        st.success("Nenhuma pendência encontrada nos clientes.")
+        return
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Clientes com pendência", len(clientes_com_pendencia))
+    m2.metric("Minis pendentes", len(linhas))
+    m3.metric("Valor em aberto", money(total_em_aberto))
+
+    filtro = st.text_input(
+        "Buscar por cliente, e-mail, mini, marca, status ou situação",
+        key="admin_busca_geral_pendencias",
+        placeholder="Ex: João, Skyline, vencido, pendente..."
+    ).strip().lower()
+
+    linhas_filtradas = linhas
+    if filtro:
+        linhas_filtradas = [
+            linha for linha in linhas
+            if filtro in " ".join(str(v).lower() for v in linha.values())
+        ]
+
+    st.dataframe(linhas_filtradas, use_container_width=True, hide_index=True)
+
+    if len(linhas_filtradas) != len(linhas):
+        st.caption(f"Exibindo {len(linhas_filtradas)} de {len(linhas)} pendência(s).")
+
+
 def buscar_minis(usuario_id):
     return (
         supabase.table("minis")
@@ -7568,7 +7679,40 @@ else:
         </div>
         """, unsafe_allow_html=True)
 
-        render_alertas_financeiros_admin(todas_minis, clientes)
+        # Alertas financeiros antigos ocultados da Home para evitar poluição visual.
+        # O admin agora consulta tudo pelo botão limpo abaixo.
+
+        # Botão abre/fecha do geral de pendências.
+        # Mantém o relatório fora da tela quando o admin clicar em fechar,
+        # sem precisar trocar de página, atualizar navegador ou limpar sessão.
+        if "admin_mostrar_geral_pendencias" not in st.session_state:
+            st.session_state["admin_mostrar_geral_pendencias"] = False
+
+        texto_btn_pendencias = (
+            "❌ Fechar geral de pendências"
+            if st.session_state["admin_mostrar_geral_pendencias"]
+            else "📋 Abrir geral de pendências dos clientes"
+        )
+
+        if st.button(texto_btn_pendencias, use_container_width=True, key="btn_admin_geral_pendencias_home"):
+            st.session_state["admin_mostrar_geral_pendencias"] = not st.session_state["admin_mostrar_geral_pendencias"]
+            st.rerun()
+
+        if st.session_state.get("admin_mostrar_geral_pendencias"):
+            col_fecha_pend_1, col_fecha_pend_2 = st.columns([1, 4])
+            with col_fecha_pend_1:
+                if st.button("❌ Fechar lista", use_container_width=True, key="btn_admin_fechar_lista_pendencias_topo"):
+                    st.session_state["admin_mostrar_geral_pendencias"] = False
+                    st.session_state["admin_busca_geral_pendencias"] = ""
+                    st.rerun()
+
+            st.divider()
+            render_geral_pendencias_admin(todas_minis, clientes)
+
+            if st.button("❌ Fechar geral de pendências", use_container_width=True, key="btn_admin_fechar_lista_pendencias_rodape"):
+                st.session_state["admin_mostrar_geral_pendencias"] = False
+                st.session_state["admin_busca_geral_pendencias"] = ""
+                st.rerun()
 
         aba_clientes, aba_loja, aba_pre_venda_admin, aba_pedidos, aba_minis, aba_financeiro, aba_hall_admin, aba_ranking_admin, aba_timeline_admin, aba_sorteios_admin, aba_lab_admin, aba_exec_admin, aba_checkout_admin, aba_notif_admin = st.tabs([
             "👥 Clientes",

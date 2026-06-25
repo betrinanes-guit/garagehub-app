@@ -374,6 +374,26 @@ def money(valor):
         return "R$ 0,00"
 
 
+def atualizar_garagehub():
+    """Recarrega o app após qualquer alteração no Supabase.
+
+    Mantém a experiência automática para o admin/cliente e evita depender
+    de botão manual de atualização depois de inserir, editar, excluir,
+    cancelar ou confirmar qualquer item.
+    """
+    try:
+        st.cache_data.clear()
+    except Exception:
+        pass
+
+    try:
+        st.cache_resource.clear()
+    except Exception:
+        pass
+
+    st.rerun()
+
+
 
 
 def pix_chave_padrao():
@@ -1074,7 +1094,11 @@ def buscar_minis(usuario_id):
 
 
 def cadastrar_mini(usuario_id, nome, marca, serie, ano, raridade, valor_pago, valor_estimado, foto_url,
-                   status_pagamento="pendente", tipo_mini="compra", destaque_cliente="", data_pagamento_prevista=None):
+                   status_pagamento="pendente", tipo_mini="compra", destaque_cliente="", data_pagamento_prevista=None, loja_mini_id=None):
+    destaque_cliente = str(destaque_cliente or "")
+    if loja_mini_id and "loja_id" not in destaque_cliente.lower() and "loja mini id" not in destaque_cliente.lower():
+        destaque_cliente = (destaque_cliente + " | " if destaque_cliente else "") + f"Loja_ID: {loja_mini_id}"
+
     dados = {
         "usuario_id": usuario_id,
         "nome": nome,
@@ -1088,7 +1112,8 @@ def cadastrar_mini(usuario_id, nome, marca, serie, ano, raridade, valor_pago, va
         "status_pagamento": status_pagamento or "pendente",
         "tipo_mini": tipo_mini or "compra",
         "destaque_cliente": destaque_cliente or "",
-        "data_pagamento_prevista": str(data_pagamento_prevista) if data_pagamento_prevista else None
+        "data_pagamento_prevista": str(data_pagamento_prevista) if data_pagamento_prevista else None,
+        "loja_mini_id": loja_mini_id
     }
 
     try:
@@ -1099,6 +1124,7 @@ def cadastrar_mini(usuario_id, nome, marca, serie, ano, raridade, valor_pago, va
         dados.pop("tipo_mini", None)
         dados.pop("destaque_cliente", None)
         dados.pop("data_pagamento_prevista", None)
+        dados.pop("loja_mini_id", None)
         supabase.table("minis").insert(dados).execute()
 
 
@@ -1564,12 +1590,12 @@ def render_pre_vendas_admin(clientes):
                     foto_url = upload_storage(foto, "pre-vendas", nome) if foto is not None else ""
                     cadastrar_pre_venda(nome, marca, serie, escala, foto_url, quantidade_total, valor_total, valor_sinal, data_prevista, observacao)
                     st.success("Pré-venda criada com sucesso.")
-                    st.rerun()
+                    atualizar_garagehub()
 
     col_refresh_1, col_refresh_2 = st.columns([1, 4])
     with col_refresh_1:
         if st.button("🔄 Atualizar reservas", use_container_width=True, key="admin_refresh_pre_venda_reservas"):
-            st.rerun()
+            atualizar_garagehub()
     with col_refresh_2:
         st.caption("Atualiza pré-vendas e reservas feitas pelos clientes, sem precisar apertar F5 no navegador.")
 
@@ -1649,19 +1675,19 @@ def render_pre_vendas_admin(clientes):
                                 "status": status_final,
                             })
                             st.success("Pré-venda atualizada.")
-                            st.rerun()
+                            atualizar_garagehub()
                 with b2:
                     if st.button("🏁 Finalizar", key=f"finalizar_pv_{pv_id}", use_container_width=True):
                         atualizar_pre_venda(pv_id, {"status": "finalizada"})
                         st.success("Pré-venda finalizada.")
-                        st.rerun()
+                        atualizar_garagehub()
                 with b3:
                     confirmar = st.checkbox("Confirmar exclusão", key=f"conf_excluir_pv_{pv_id}")
                     if st.button("🗑️ Excluir", key=f"excluir_pv_{pv_id}", use_container_width=True):
                         if confirmar:
                             excluir_pre_venda(pv_id)
                             st.success("Pré-venda excluída.")
-                            st.rerun()
+                            atualizar_garagehub()
                         else:
                             st.warning("Marque confirmar exclusão.")
 
@@ -1752,7 +1778,7 @@ def render_pre_vendas_admin(clientes):
                             "valor_restante": float(novo_restante),
                         })
                         st.success("Valores da reserva atualizados.")
-                        st.rerun()
+                        atualizar_garagehub()
 
             if editar_bloqueado:
                 st.caption("Reserva já incluída na garagem ou cancelada. Para alterar valores, faça antes de incluir/cancelar.")
@@ -1761,18 +1787,18 @@ def render_pre_vendas_admin(clientes):
         with a1:
             if st.button("🟡 Sinal pago", key=f"pv_sinal_pago_{r['id']}", disabled=status_reserva in ["incluido_na_garagem", "cancelado"]):
                 atualizar_reserva_pre_venda(r["id"], {"status": "sinal_pago"})
-                st.rerun()
+                atualizar_garagehub()
         with a2:
             if st.button("🟢 Pago total", key=f"pv_pago_total_{r['id']}", disabled=status_reserva in ["incluido_na_garagem", "cancelado"]):
                 # Ao marcar pago total, garante que o restante fique zerado.
                 atualizar_reserva_pre_venda(r["id"], {"status": "pago_total", "valor_sinal": float(r.get("valor_total") or 0), "valor_restante": 0.0})
-                st.rerun()
+                atualizar_garagehub()
         with a3:
             if st.button("🚗 Incluir garagem", key=f"pv_incluir_garagem_{r['id']}", disabled=status_reserva not in ["sinal_pago", "pago_total"]):
                 ok, msg = efetivar_reserva_pre_venda_na_garagem(r, pv)
                 if ok:
                     st.success(msg)
-                    st.rerun()
+                    atualizar_garagehub()
                 else:
                     st.error(msg)
         with a4:
@@ -1780,7 +1806,7 @@ def render_pre_vendas_admin(clientes):
                 atualizar_reserva_pre_venda(r["id"], {"status": "cancelado"})
                 if str(pv.get("status") or "").lower() == "esgotada" and quantidade_restante_pre_venda(pv) > 0:
                     atualizar_pre_venda(pv.get("id"), {"status": "ativa"})
-                st.rerun()
+                atualizar_garagehub()
         with a5:
             st.caption("Edite/salve o sinal antes de marcar sinal pago ou incluir na garagem.")
 
@@ -1808,7 +1834,7 @@ def render_pre_vendas_cliente(usuario):
     col_refresh_1, col_refresh_2 = st.columns([1, 4])
     with col_refresh_1:
         if st.button("🔄 Atualizar status", use_container_width=True, key="cliente_refresh_pre_venda_status"):
-            st.rerun()
+            atualizar_garagehub()
     with col_refresh_2:
         st.caption("Atualiza o status das suas reservas sem precisar apertar F5 no navegador.")
 
@@ -1926,7 +1952,7 @@ def render_pre_vendas_cliente(usuario):
                 ok, msg = criar_reserva_pre_venda(pv_atualizada, usuario.get("id"), int(qtd or 1))
                 if ok:
                     st.success(msg)
-                    st.rerun()
+                    atualizar_garagehub()
                 else:
                     st.error(msg)
             except Exception as e:
@@ -2143,6 +2169,115 @@ def baixar_estoque_loja_item(item, quantidade=1):
     return novo
 
 
+def devolver_estoque_loja_item(item, quantidade=1):
+    """Devolve unidades ao estoque da Loja quando o admin remove uma mini da garagem."""
+    if not item:
+        return None, None
+
+    try:
+        quantidade = max(1, int(quantidade or 1))
+    except Exception:
+        quantidade = 1
+
+    estoque_antes = obter_estoque_loja_item(item)
+    estoque_depois = estoque_antes + quantidade
+    dados = dados_estoque_loja_para_update(item.get("destaque") or "", estoque_depois, status="disponivel")
+    atualizar_loja_mini(item.get("id"), dados)
+    return estoque_antes, estoque_depois
+
+
+def extrair_loja_id_destaque(destaque):
+    """Lê o ID da mini da Loja salvo no destaque da garagem, quando existir."""
+    texto = str(destaque or "")
+    padroes = [
+        r"loja[_\s-]*id\s*[:=]\s*([0-9a-fA-F-]+)",
+        r"loja\s+mini\s+id\s*[:=]\s*([0-9a-fA-F-]+)",
+        r"loja_mini_id\s*[:=]\s*([0-9a-fA-F-]+)",
+    ]
+    for padrao in padroes:
+        m = re.search(padrao, texto, flags=re.IGNORECASE)
+        if m:
+            return m.group(1)
+    return None
+
+
+def localizar_loja_item_da_mini(mini):
+    """Localiza o item da Loja relacionado a uma mini da garagem.
+
+    Prioridade:
+    1) coluna loja_mini_id, se existir;
+    2) metadado Loja_ID no destaque_cliente;
+    3) compatibilidade com registros antigos: nome/marca/série/foto.
+    """
+    if not mini:
+        return None
+
+    loja_id = mini.get("loja_mini_id") or extrair_loja_id_destaque(mini.get("destaque_cliente"))
+    if loja_id:
+        item = buscar_loja_item_por_id(loja_id)
+        if item:
+            return item
+
+    try:
+        itens = buscar_loja_minis(apenas_disponiveis=False) or []
+    except Exception:
+        itens = []
+
+    nome = str(mini.get("nome") or "").strip().lower()
+    marca = str(mini.get("marca") or "").strip().lower()
+    serie = str(mini.get("serie") or "").strip().lower()
+    foto = str(mini.get("foto_url") or "").strip()
+
+    candidatos = []
+    for item in itens:
+        if str(item.get("nome") or "").strip().lower() != nome:
+            continue
+        if marca and str(item.get("marca") or "").strip().lower() != marca:
+            continue
+        if serie and str(item.get("serie") or "").strip().lower() != serie:
+            continue
+        candidatos.append(item)
+
+    if len(candidatos) == 1:
+        return candidatos[0]
+
+    if foto and candidatos:
+        for item in candidatos:
+            if str(item.get("foto_url") or "").strip() == foto:
+                return item
+
+    return candidatos[0] if candidatos else None
+
+
+def excluir_mini_admin_garagem(mini):
+    """Exclusão inteligente usada pelo admin na garagem do cliente.
+
+    - Pré-venda: usa o fluxo já existente para preservar/cancelar a reserva.
+    - Loja/compra: devolve 1 unidade ao estoque da Loja e remove da garagem.
+    - Manual/migração/outros: remove somente da garagem.
+    """
+    if not mini:
+        return False, "Mini inválida para exclusão."
+
+    if is_mini_pre_venda(mini):
+        return cancelar_pre_venda_mini_garagem(mini)
+
+    origem = origem_operacional_mini(mini)
+
+    if origem == "loja":
+        item_loja = localizar_loja_item_da_mini(mini)
+        if item_loja:
+            estoque_antes, estoque_depois = devolver_estoque_loja_item(item_loja, 1)
+            excluir_mini(mini.get("id"))
+            return True, f"Mini removida da garagem e estoque da Loja devolvido: {estoque_antes} → {estoque_depois}."
+
+        excluir_mini(mini.get("id"))
+        return True, "Mini removida da garagem. Não consegui localizar o item original na Loja para devolver estoque automaticamente."
+
+    excluir_mini(mini.get("id"))
+    return True, "Mini removida da garagem do cliente."
+
+
 def buscar_loja_item_por_id(loja_id):
     if not loja_id:
         return None
@@ -2232,7 +2367,9 @@ def concluir_pedido_na_garagem(pedido, loja_item=None):
         pedido.get("foto_url") or loja_item.get("foto_url") or "",
         "pago",
         "loja",
-        "Origem: Loja / Pedido concluído"
+        f"Origem: Loja / Pedido concluído | Loja_ID: {pedido.get('loja_mini_id')}",
+        None,
+        pedido.get("loja_mini_id")
     )
 
     atualizar_pedido(pedido["id"], {"status": "concluido"})
@@ -2417,7 +2554,7 @@ def render_admin_garagem_cliente(usuario_cliente):
     with col_admin_voltar:
         if st.button("⬅️ Voltar para usuários", use_container_width=True, key="voltar_admin_usuarios"):
             st.session_state.pop("admin_cliente_garagem_id", None)
-            st.rerun()
+            atualizar_garagehub()
 
     with col_admin_refresh:
         if st.button("🔄 Atualizar dados do cliente", use_container_width=True, key=f"admin_refresh_garagem_cliente_{usuario_cliente.get('id')}"):
@@ -2429,7 +2566,7 @@ def render_admin_garagem_cliente(usuario_cliente):
                 st.cache_resource.clear()
             except Exception:
                 pass
-            st.rerun()
+            atualizar_garagehub()
 
     st.caption("Use este botão depois de lançar pré-vendas antigas ou minis manualmente para recarregar a garagem direto do Supabase.")
 
@@ -2548,12 +2685,13 @@ def render_admin_garagem_cliente(usuario_cliente):
                                 status_lancamento,
                                 "loja",
                                 observacao_lancamento or "Lançado pelo admin a partir da Loja",
-                                data_pagamento_lancamento
+                                data_pagamento_lancamento,
+                                item_atualizado.get("id")
                             )
 
                         novo_estoque = baixar_estoque_loja_item(item_atualizado, quantidade_lancamento)
                         st.success(f"{quantidade_lancamento} mini(s) lançada(s) na garagem. Estoque atualizado para {novo_estoque} unidade(s).")
-                        st.rerun()
+                        atualizar_garagehub()
                 except Exception as e:
                     st.error(f"Erro ao lançar mini da Loja na garagem: {e}")
 
@@ -2629,7 +2767,7 @@ def render_admin_garagem_cliente(usuario_cliente):
                             manual_data_pagamento
                         )
                         st.success("Mini manual/migração incluída na garagem do cliente. Não alterou estoque da Loja.")
-                        st.rerun()
+                        atualizar_garagehub()
                     except Exception as e:
                         st.error(f"Erro ao incluir mini manual na garagem: {e}")
 
@@ -2767,39 +2905,35 @@ def render_admin_garagem_cliente(usuario_cliente):
                         try:
                             atualizar_mini(mini_id, dados_update)
                             st.success("Mini atualizada com sucesso.")
-                            st.rerun()
+                            atualizar_garagehub()
                         except Exception as e:
                             st.error(f"Erro ao atualizar mini: {e}")
 
                 with b2:
-                    if pode_excluir_mini_pela_garagem(mini):
-                        st.info("Origem manual/migração: esta mini pode ser excluída por aqui.")
-                        confirmar_excluir = st.checkbox("Confirmar exclusão", key=f"admin_confirmar_excluir_mini_{mini_id}")
-                        if st.button("🗑️ Excluir mini manual", use_container_width=True, key=f"admin_excluir_mini_{mini_id}"):
-                            if not confirmar_excluir:
-                                st.warning("Marque confirmar exclusão antes de apagar.")
-                            else:
-                                try:
-                                    excluir_mini(mini_id)
-                                    st.success("Mini manual/migração excluída da garagem do cliente.")
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Erro ao excluir mini: {e}")
-                    elif is_mini_pre_venda(mini):
+                    if is_mini_pre_venda(mini):
                         st.warning("Pré-venda: o admin pode cancelar/remover esta mini da garagem, mantendo o histórico da reserva como cancelado.")
-                        confirmar_cancelar_pv = st.checkbox("Confirmar cancelamento/remoção da pré-venda", key=f"admin_confirmar_cancelar_pv_mini_{mini_id}")
-                        if st.button("🗑️ Cancelar/remover pré-venda", use_container_width=True, key=f"admin_cancelar_pv_mini_{mini_id}"):
-                            if not confirmar_cancelar_pv:
-                                st.warning("Marque confirmar cancelamento antes de remover.")
-                            else:
-                                ok, msg = cancelar_pre_venda_mini_garagem(mini)
+                        texto_botao_excluir = "🗑️ Cancelar/remover pré-venda"
+                    elif origem_operacional_mini(mini) == "loja":
+                        st.info("Origem Loja/compra: ao excluir, 1 unidade será devolvida automaticamente ao estoque da Loja.")
+                        texto_botao_excluir = "🗑️ Excluir e devolver ao estoque"
+                    else:
+                        st.info("Origem manual/migração: ao excluir, somente a garagem deste cliente será alterada.")
+                        texto_botao_excluir = "🗑️ Excluir da garagem"
+
+                    confirmar_excluir_admin = st.checkbox("Confirmar exclusão/remoção", key=f"admin_confirmar_excluir_mini_{mini_id}")
+                    if st.button(texto_botao_excluir, use_container_width=True, key=f"admin_excluir_mini_{mini_id}"):
+                        if not confirmar_excluir_admin:
+                            st.warning("Marque confirmar exclusão/remoção antes de apagar.")
+                        else:
+                            try:
+                                ok, msg = excluir_mini_admin_garagem(mini)
                                 if ok:
                                     st.success(msg)
-                                    st.rerun()
+                                    atualizar_garagehub()
                                 else:
                                     st.error(msg)
-                    else:
-                        st.warning("Mini com origem Loja/compra: exclusão bloqueada nesta garagem. Remova/controle pela Loja/Admin da Loja para proteger estoque e histórico.")
+                            except Exception as e:
+                                st.error(f"Erro ao excluir/remover mini: {e}")
 
 
 # =========================
@@ -3300,7 +3434,7 @@ def render_primeiro_acesso(usuario):
         st.session_state["usuario"] = usuario
 
         st.success("🔥 Senha criada com sucesso!")
-        st.rerun()
+        atualizar_garagehub()
 
     return False
 
@@ -5620,7 +5754,7 @@ Regras obrigatórias:
             except Exception:
                 pass
             st.success("Mini adicionada à sua garagem pelo Scanner IA Premium.")
-            st.rerun()
+            atualizar_garagehub()
         return
 
     st.markdown('<div class="checkout-box"><h3>👑 Ações de admin</h3><p>Use o resultado validado para publicar na loja ou lançar diretamente na garagem de um cliente.</p></div>', unsafe_allow_html=True)
@@ -5634,7 +5768,7 @@ Regras obrigatórias:
             try:
                 cadastrar_loja_mini(s_nome, s_marca, s_serie, s_ano, s_raridade, float(s_valor_pago or s_estimado or 0), float(s_estimado or 0), foto_url, "disponivel", destaque_loja)
                 st.success("Mini publicada na loja pelo Scanner IA Premium.")
-                st.rerun()
+                atualizar_garagehub()
             except Exception as e:
                 st.error(f"Não consegui publicar na loja: {e}")
     with ac2:
@@ -5663,7 +5797,7 @@ Regras obrigatórias:
                 except Exception:
                     pass
                 st.success("Mini lançada na garagem do cliente pelo Scanner IA Premium.")
-                st.rerun()
+                atualizar_garagehub()
         else:
             st.info("Cadastre clientes para lançar direto na garagem.")
 
@@ -6447,7 +6581,7 @@ def render_popup_sorteio_cartela():
 
         if st.button("✅ Fechar resultado", key="fechar_popup_sorteio_cartela", use_container_width=True):
             st.session_state.pop("popup_sorteio_cartela", None)
-            st.rerun()
+            atualizar_garagehub()
 
     if hasattr(st, "dialog"):
         @st.dialog("🏁 Resultado oficial do sorteio")
@@ -6504,7 +6638,7 @@ def render_admin_cartela_sorte_bloco(rifa, clientes, clientes_por_id, rifas):
     col_refresh_cartela, col_refresh_cartela_txt = st.columns([1, 4])
     with col_refresh_cartela:
         if st.button("🔄 Atualizar cartela", key=f"admin_refresh_cartela_{rifa_id}", use_container_width=True):
-            st.rerun()
+            atualizar_garagehub()
     with col_refresh_cartela_txt:
         st.caption("Atualiza os nomes reservados pelos clientes nesta Cartela da Sorte.")
 
@@ -6547,7 +6681,7 @@ def render_admin_cartela_sorte_bloco(rifa, clientes, clientes_por_id, rifas):
                             "status_pagamento": status_compra,
                         })
                     st.success(f"{len(nomes_escolhidos)} nome(s) lançado(s) na cartela.")
-                    st.rerun()
+                    atualizar_garagehub()
 
         if cartela:
             st.markdown("#### Nomes preenchidos")
@@ -6587,13 +6721,13 @@ def render_admin_cartela_sorte_bloco(rifa, clientes, clientes_por_id, rifas):
                         for item in itens:
                             atualizar_nome_cartela(item.get("id"), {"status_pagamento": "pago"})
                         st.success("Lote marcado como pago.")
-                        st.rerun()
+                        atualizar_garagehub()
                 with g2:
                     if st.button("🔵 Voltar para reservado", key=f"cartela_reservado_{rifa_id}_{uid}_{status_atual}_{idx_grupo}", use_container_width=True):
                         for item in itens:
                             atualizar_nome_cartela(item.get("id"), {"status_pagamento": "reservado"})
                         st.success("Lote marcado como reservado.")
-                        st.rerun()
+                        atualizar_garagehub()
                 with g3:
                     confirmar_liberar = st.checkbox("Confirmar liberação", key=f"cartela_conf_lib_{rifa_id}_{uid}_{status_atual}_{idx_grupo}")
                     if st.button("🗑️ Liberar nomes", key=f"cartela_liberar_{rifa_id}_{uid}_{status_atual}_{idx_grupo}", use_container_width=True):
@@ -6603,7 +6737,7 @@ def render_admin_cartela_sorte_bloco(rifa, clientes, clientes_por_id, rifas):
                             for item in itens:
                                 liberar_nome_cartela(item.get("id"))
                             st.success("Nomes liberados.")
-                            st.rerun()
+                            atualizar_garagehub()
 
         st.divider()
         st.markdown("### 🍀 Área oficial do sorteio da cartela")
@@ -6630,7 +6764,7 @@ def render_admin_cartela_sorte_bloco(rifa, clientes, clientes_por_id, rifas):
                         "resultado": msg,
                     }
                     st.balloons()
-                    st.rerun()
+                    atualizar_garagehub()
                 else:
                     st.warning(msg)
         with ac2:
@@ -6638,7 +6772,7 @@ def render_admin_cartela_sorte_bloco(rifa, clientes, clientes_por_id, rifas):
             if st.button("💾 Salvar status", key=f"cartela_salvar_status_{rifa_id}", use_container_width=True):
                 atualizar_rifa(rifa_id, {"status": novo_status})
                 st.success("Status atualizado.")
-                st.rerun()
+                atualizar_garagehub()
         with ac3:
             confirmar = st.checkbox("Confirmar exclusão", key=f"cartela_confirmar_excluir_{rifa_id}")
             if st.button("🗑️ Excluir cartela", key=f"cartela_excluir_{rifa_id}", use_container_width=True):
@@ -6647,7 +6781,7 @@ def render_admin_cartela_sorte_bloco(rifa, clientes, clientes_por_id, rifas):
                 else:
                     excluir_rifa(rifa_id)
                     st.success("Cartela excluída.")
-                    st.rerun()
+                    atualizar_garagehub()
 
 
 def render_cliente_cartela_sorte_bloco(rifa, usuario, clientes_por_id):
@@ -6775,7 +6909,7 @@ def render_cliente_cartela_sorte_bloco(rifa, usuario, clientes_por_id):
                         st.success(f"{reservados} nome(s) reservado(s) com sucesso. Aguarde o admin confirmar o pagamento.")
                     if falhas:
                         st.warning(f"{falhas} nome(s) não foram reservados porque podem ter sido escolhidos por outro cliente. Atualize e tente novamente.")
-                    st.rerun()
+                    atualizar_garagehub()
 
     render_grade_cartela_rifa(rifa, buscar_cartela_rifa(rifa_id), clientes_por_id)
 
@@ -6812,7 +6946,7 @@ def render_rifas_admin(clientes):
     col_refresh_rifas, col_refresh_txt = st.columns([1, 4])
     with col_refresh_rifas:
         if st.button("🔄 Atualizar rifas", key="admin_refresh_rifas_geral", use_container_width=True):
-            st.rerun()
+            atualizar_garagehub()
     with col_refresh_txt:
         st.caption("Atualiza rifas, cartelas e reservas de nomes feitas pelos clientes, sem precisar apertar F5.")
 
@@ -6867,7 +7001,7 @@ def render_rifas_admin(clientes):
                     try:
                         criar_rifa(r_titulo, r_premio, foto_url, r_desc, r_valor, r_qtd, modos[r_modo_label], r_status)
                         st.success("Rifa criada com sucesso.")
-                        st.rerun()
+                        atualizar_garagehub()
                     except Exception as e:
                         st.error(f"Erro ao criar rifa: {e}")
 
@@ -6995,7 +7129,7 @@ def render_rifas_admin(clientes):
                     )
                     if ok:
                         st.success(msg)
-                        st.rerun()
+                        atualizar_garagehub()
                     else:
                         st.warning(msg)
 
@@ -7057,7 +7191,7 @@ def render_rifas_admin(clientes):
                                 try:
                                     atualizar_numeros_rifa_lote(rifa_id, uid_grupo, status_grupo, "pago")
                                     st.success("Lote marcado como pago.")
-                                    st.rerun()
+                                    atualizar_garagehub()
                                 except Exception as e:
                                     st.error(f"Erro ao confirmar pagamento do lote: {e}")
 
@@ -7070,7 +7204,7 @@ def render_rifas_admin(clientes):
                                 try:
                                     atualizar_numeros_rifa_lote(rifa_id, uid_grupo, status_grupo, "reservado")
                                     st.success("Lote marcado como reservado.")
-                                    st.rerun()
+                                    atualizar_garagehub()
                                 except Exception as e:
                                     st.error(f"Erro ao reservar lote: {e}")
 
@@ -7090,7 +7224,7 @@ def render_rifas_admin(clientes):
                                     try:
                                         excluir_numeros_rifa_lote(rifa_id, uid_grupo, status_grupo)
                                         st.success("Lote cancelado e números liberados.")
-                                        st.rerun()
+                                        atualizar_garagehub()
                                     except Exception as e:
                                         st.error(f"Erro ao cancelar lote: {e}")
 
@@ -7120,7 +7254,7 @@ def render_rifas_admin(clientes):
                     if ok:
                         st.balloons()
                         st.success(msg)
-                        st.rerun()
+                        atualizar_garagehub()
                     else:
                         st.warning(msg)
             with ac2:
@@ -7133,7 +7267,7 @@ def render_rifas_admin(clientes):
                 if st.button("💾 Salvar status", key=f"rifa_salvar_status_{rifa_id}", use_container_width=True):
                     atualizar_rifa(rifa_id, {"status": novo_status})
                     st.success("Status atualizado.")
-                    st.rerun()
+                    atualizar_garagehub()
             with ac3:
                 confirmar = st.checkbox("Confirmar exclusão", key=f"rifa_confirmar_excluir_{rifa_id}")
                 if st.button("🗑️ Excluir rifa", key=f"rifa_excluir_{rifa_id}", use_container_width=True):
@@ -7142,7 +7276,7 @@ def render_rifas_admin(clientes):
                     else:
                         excluir_rifa(rifa_id)
                         st.success("Rifa excluída.")
-                        st.rerun()
+                        atualizar_garagehub()
 
     st.divider()
     st.subheader("👑 Ranking geral de ganhadores")
@@ -7180,7 +7314,7 @@ def render_rifas_cliente(usuario):
         st.caption(f"Última atualização da tela: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
     with col_rifa_refresh_2:
         if st.button("🔄 Atualizar rifas", use_container_width=True, key="cliente_atualizar_rifas"):
-            st.rerun()
+            atualizar_garagehub()
 
     try:
         rifas = buscar_rifas()
@@ -7446,7 +7580,7 @@ if st.session_state.usuario is None:
                     usuario["senha"] = "primeiro_acesso"
                     st.session_state["usuario_primeiro_acesso"] = usuario
                     st.success("Senha resetada. Agora crie uma nova senha.")
-                    st.rerun()
+                    atualizar_garagehub()
                 except Exception as e:
                     st.error(f"Erro ao resetar senha: {e}")
                     st.stop()
@@ -7464,7 +7598,7 @@ if st.session_state.usuario is None:
 
                 if senha_pendente(usuario):
                     st.session_state["usuario_primeiro_acesso"] = usuario
-                    st.rerun()
+                    atualizar_garagehub()
 
                 st.info("Sua conta já possui senha cadastrada. Use sua senha para entrar.")
 
@@ -7481,7 +7615,7 @@ if st.session_state.usuario is None:
 
                 if senha_pendente(usuario):
                     st.session_state["usuario_primeiro_acesso"] = usuario
-                    st.rerun()
+                    atualizar_garagehub()
 
                 usuario = login(email, senha)
 
@@ -7492,7 +7626,7 @@ if st.session_state.usuario is None:
                         st.session_state.pop("ultimo_email_login", None)
 
                     st.session_state["usuario"] = usuario
-                    st.rerun()
+                    atualizar_garagehub()
                 else:
                     st.error("E-mail ou senha inválidos.")
 
@@ -7531,7 +7665,7 @@ if st.session_state.usuario is None:
                     if usuario_criado:
                         st.session_state["usuario"] = usuario_criado
                         st.success("Conta criada com sucesso. Entrando na sua garagem...")
-                        st.rerun()
+                        atualizar_garagehub()
                     else:
                         st.success(msg)
                         st.info("Conta criada. Faça login com seu e-mail e senha.")
@@ -7553,7 +7687,7 @@ else:
         if st.button("Sair", key="btn_sair"):
             st.session_state.usuario = None
             st.session_state.editar_mini_id = None
-            st.rerun()
+            atualizar_garagehub()
 
     # =========================
     # ADMIN
@@ -7696,7 +7830,7 @@ else:
 
         if st.button(texto_btn_pendencias, use_container_width=True, key="btn_admin_geral_pendencias_home"):
             st.session_state["admin_mostrar_geral_pendencias"] = not st.session_state["admin_mostrar_geral_pendencias"]
-            st.rerun()
+            atualizar_garagehub()
 
         if st.session_state.get("admin_mostrar_geral_pendencias"):
             col_fecha_pend_1, col_fecha_pend_2 = st.columns([1, 4])
@@ -7704,7 +7838,7 @@ else:
                 if st.button("❌ Fechar lista", use_container_width=True, key="btn_admin_fechar_lista_pendencias_topo"):
                     st.session_state["admin_mostrar_geral_pendencias"] = False
                     st.session_state["admin_busca_geral_pendencias"] = ""
-                    st.rerun()
+                    atualizar_garagehub()
 
             st.divider()
             render_geral_pendencias_admin(todas_minis, clientes)
@@ -7712,7 +7846,7 @@ else:
             if st.button("❌ Fechar geral de pendências", use_container_width=True, key="btn_admin_fechar_lista_pendencias_rodape"):
                 st.session_state["admin_mostrar_geral_pendencias"] = False
                 st.session_state["admin_busca_geral_pendencias"] = ""
-                st.rerun()
+                atualizar_garagehub()
 
         aba_clientes, aba_loja, aba_pre_venda_admin, aba_pedidos, aba_minis, aba_financeiro, aba_hall_admin, aba_ranking_admin, aba_timeline_admin, aba_sorteios_admin, aba_lab_admin, aba_exec_admin, aba_checkout_admin, aba_notif_admin = st.tabs([
             "👥 Clientes",
@@ -7760,7 +7894,7 @@ else:
                     ok, msg = criar_cliente_admin(adm_nome, adm_email, adm_senha, adm_tel, adm_cidade, adm_estado, adm_insta, foto_cliente)
                     if ok:
                         st.success(msg)
-                        st.rerun()
+                        atualizar_garagehub()
                     else:
                         st.error(msg)
 
@@ -7784,12 +7918,12 @@ else:
                 else:
                     st.session_state.pop("admin_cliente_garagem_id", None)
                     st.warning("Cliente não encontrado. Clique em Atualizar cadastros e tente novamente.")
-                    st.rerun()
+                    atualizar_garagehub()
 
             col_refresh_usuarios, _ = st.columns([1, 4])
             with col_refresh_usuarios:
                 if st.button("🔄 Atualizar cadastros", use_container_width=True, key="btn_atualizar_clientes_admin"):
-                    st.rerun()
+                    atualizar_garagehub()
 
             # Recarrega a lista ao entrar na aba para novos cadastros aparecerem no admin.
             usuarios = listar_usuarios()
@@ -7839,11 +7973,11 @@ else:
                     with c1:
                         if st.button("✅ Liberar", key=f"liberar_{u['id']}"):
                             atualizar_status(u["id"], "ativo")
-                            st.rerun()
+                            atualizar_garagehub()
                     with c2:
                         if st.button("🔒 Bloquear", key=f"bloquear_{u['id']}"):
                             atualizar_status(u["id"], "bloqueado")
-                            st.rerun()
+                            atualizar_garagehub()
                     with c3:
                         if u.get("tipo") != "admin":
                             nivel_atual = u.get("nivel_cliente") or "comum"
@@ -7851,14 +7985,14 @@ else:
                                 if st.button("Remover VIP", key=f"vip_remover_{u['id']}"):
                                     try:
                                         atualizar_nivel_cliente(u["id"], "comum")
-                                        st.rerun()
+                                        atualizar_garagehub()
                                     except Exception:
                                         st.error("Campo nivel_cliente não existe. Rode o SQL informado.")
                             else:
                                 if st.button("Conceder VIP", key=f"vip_conceder_{u['id']}"):
                                     try:
                                         atualizar_nivel_cliente(u["id"], "vip")
-                                        st.rerun()
+                                        atualizar_garagehub()
                                     except Exception:
                                         st.error("Campo nivel_cliente não existe. Rode o SQL informado.")
 
@@ -7866,7 +8000,7 @@ else:
                         if u.get("tipo") != "admin":
                             if st.button("🚗 Abrir garagem", key=f"abrir_garagem_{u['id']}"):
                                 st.session_state["admin_cliente_garagem_id"] = u["id"]
-                                st.rerun()
+                                atualizar_garagehub()
 
                     if u.get("tipo") != "admin":
                         with st.expander("🗑️ Excluir cliente definitivamente", expanded=False):
@@ -7898,7 +8032,7 @@ else:
                                         if str(st.session_state.get("admin_cliente_garagem_id")) == str(u["id"]):
                                             st.session_state.pop("admin_cliente_garagem_id", None)
                                         st.success(msg)
-                                        st.rerun()
+                                        atualizar_garagehub()
                                     else:
                                         st.error(msg)
 
@@ -7928,7 +8062,7 @@ else:
                                 u["foto_perfil_url"] = foto_url
                                 u["foto_url"] = foto_url
                                 st.success("Foto atualizada. Ela aparecerá no círculo do perfil.")
-                                st.rerun()
+                                atualizar_garagehub()
 
         # =========================
         # ABA LOJA
@@ -7972,7 +8106,7 @@ else:
                                 loja_destaque_final = atualizar_destaque_com_qtd_e_categoria(loja_destaque, loja_estoque, loja_categoria)
                                 cadastrar_loja_mini(loja_nome, loja_marca, loja_serie, loja_ano, loja_raridade, loja_valor, loja_estimado, loja_foto_url, loja_status_final, loja_destaque_final)
                                 st.success("Mini publicada na loja.")
-                                st.rerun()
+                                atualizar_garagehub()
                             except Exception as e:
                                 st.error(f"Não foi possível salvar na loja. Erro real: {e}")
 
@@ -8038,12 +8172,12 @@ else:
                                 "destaque": atualizar_destaque_com_qtd_e_categoria(el_destaque, el_estoque, el_categoria),
                             })
                             st.success("Item da loja atualizado.")
-                            st.rerun()
+                            atualizar_garagehub()
 
                         if excluir_loja_btn:
                             excluir_loja_mini(loja_edit["id"])
                             st.success("Item removido da loja.")
-                            st.rerun()
+                            atualizar_garagehub()
 
                 st.divider()
                 st.markdown("### 🧩 Categorias da loja")
@@ -8108,7 +8242,7 @@ else:
                                         try:
                                             excluir_loja_mini(item.get("id"))
                                             st.success("Mini deletada da loja.")
-                                            st.rerun()
+                                            atualizar_garagehub()
                                         except Exception as e:
                                             st.error(f"Não foi possível deletar esta mini da loja. Erro: {e}")
 
@@ -8180,7 +8314,7 @@ else:
                     with b1:
                         if st.button("🟡 Pendente", key=f"ped_pendente_{ped['id']}", disabled=status_ped == "concluido"):
                             atualizar_pedido(ped["id"], {"status": "pendente"})
-                            st.rerun()
+                            atualizar_garagehub()
                     with b2:
                         if st.button("🔵 Reservar", key=f"ped_reservar_{ped['id']}", disabled=status_ped == "concluido"):
                             atualizar_pedido(ped["id"], {"status": "reservado"})
@@ -8189,7 +8323,7 @@ else:
                                     atualizar_loja_mini(ped.get("loja_mini_id"), {"status": "reservado"})
                                 except Exception:
                                     pass
-                            st.rerun()
+                            atualizar_garagehub()
                     with b3:
                         if st.button("🔴 Cancelar", key=f"ped_cancelar_{ped['id']}", disabled=status_ped == "concluido"):
                             atualizar_pedido(ped["id"], {"status": "cancelado"})
@@ -8198,11 +8332,11 @@ else:
                                     atualizar_loja_mini(ped.get("loja_mini_id"), {"status": "disponivel"})
                                 except Exception:
                                     pass
-                            st.rerun()
+                            atualizar_garagehub()
                     with b4:
                         if st.button("💳 Pix", key=f"ped_pix_{ped['id']}", disabled=status_ped in ["concluido", "cancelado"]):
                             atualizar_pedido(ped["id"], {"status": "aguardando_pix", "observacoes": f"Pix gerado para conferência manual. {gerar_pix_copia_cola(ped)}"})
-                            st.rerun()
+                            atualizar_garagehub()
                     with b5:
                         if st.button("🟢 Confirmar Pix + garagem", key=f"ped_pix_confirmar_{ped['id']}", disabled=status_ped == "concluido"):
                             ok, msg = concluir_pedido_na_garagem(ped, loja_item)
@@ -8210,7 +8344,7 @@ else:
                                 st.success(msg)
                             else:
                                 st.warning(msg)
-                            st.rerun()
+                            atualizar_garagehub()
                     with b6:
                         if status_ped == "concluido":
                             st.success("Pedido concluído e mini já lançada.")
@@ -8259,7 +8393,7 @@ else:
                                     status_pagamento, tipo_mini, destaque_cliente, data_pagamento_prevista
                                 )
                                 st.success("Mini lançada na garagem do cliente.")
-                                st.rerun()
+                                atualizar_garagehub()
 
             st.divider()
             st.subheader("Últimos lançamentos na garagem")
@@ -8401,12 +8535,12 @@ else:
                                 atualizar_mini(mini_edit["id"], dados)
 
                             st.success("Mini atualizada com sucesso.")
-                            st.rerun()
+                            atualizar_garagehub()
 
                         if excluir_admin:
                             excluir_mini(mini_edit["id"])
                             st.success("Mini excluída com sucesso.")
-                            st.rerun()
+                            atualizar_garagehub()
 
         # =========================
         # ABA FINANCEIRO
@@ -8781,7 +8915,7 @@ else:
                                                 criar_pedido_loja(usuario["id"], item)
                                                 baixar_estoque_loja_item(item, 1)
                                                 st.success("Pedido enviado ao admin. Acompanhe o andamento na aba Meus pedidos.")
-                                                st.rerun()
+                                                atualizar_garagehub()
                                         except Exception:
                                             st.error("Não foi possível criar o pedido. Confirme se a tabela pedidos existe no Supabase.")
                                 with col_btn2:
@@ -8859,7 +8993,7 @@ else:
                                 try:
                                     atualizar_pedido(ped["id"], {"status": "aguardando_pix", "observacoes": f"Pix gerado pelo cliente. {gerar_pix_copia_cola(ped)}"})
                                     st.success("Pix gerado. Após pagar, avise o admin para confirmar e lançar na garagem.")
-                                    st.rerun()
+                                    atualizar_garagehub()
                                 except Exception:
                                     st.error("Não foi possível gerar o Pix agora.")
                         with c_cancel:
@@ -8869,7 +9003,7 @@ else:
                                     if ped.get("loja_mini_id"):
                                         atualizar_loja_mini(ped.get("loja_mini_id"), {"status": "disponivel"})
                                     st.success("Pedido cancelado.")
-                                    st.rerun()
+                                    atualizar_garagehub()
                                 except Exception:
                                     st.error("Não foi possível cancelar o pedido.")
 
@@ -9035,7 +9169,7 @@ else:
                         st.cache_resource.clear()
                     except Exception:
                         pass
-                    st.rerun()
+                    atualizar_garagehub()
             with col_cliente_refresh_2:
                 st.caption("Clique aqui quando o admin incluir pré-vendas antigas ou novas minis na sua garagem.")
 

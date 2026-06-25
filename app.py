@@ -1093,6 +1093,252 @@ def buscar_minis(usuario_id):
     )
 
 
+# =========================
+# ENVIOS / EXPEDIÇÃO
+# =========================
+def buscar_envios_cliente(cliente_id):
+    """Busca os envios cadastrados para um cliente."""
+    try:
+        return (
+            supabase.table("envios")
+            .select("*")
+            .eq("cliente_id", cliente_id)
+            .order("criado_em", desc=True)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        return []
+
+
+def buscar_itens_envios_por_envio_ids(envio_ids):
+    """Busca os itens vinculados a uma lista de envios."""
+    envio_ids = [e for e in (envio_ids or []) if e]
+    if not envio_ids:
+        return []
+
+    try:
+        return (
+            supabase.table("envio_itens")
+            .select("*")
+            .in_("envio_id", envio_ids)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        return []
+
+
+def buscar_envio_itens_por_mini_ids(mini_ids):
+    """Busca vínculos de envio para uma lista de minis."""
+    mini_ids = [m for m in (mini_ids or []) if m]
+    if not mini_ids:
+        return []
+
+    try:
+        return (
+            supabase.table("envio_itens")
+            .select("*")
+            .in_("mini_id", mini_ids)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        return []
+
+
+def mapa_envio_por_mini(minis):
+    """Retorna {mini_id: envio_id} para identificar quais minis já foram despachadas."""
+    ids = [m.get("id") for m in (minis or []) if m.get("id")]
+    itens = buscar_envio_itens_por_mini_ids(ids)
+    return {str(i.get("mini_id")): str(i.get("envio_id")) for i in (itens or []) if i.get("mini_id") and i.get("envio_id")}
+
+
+def criar_envio_cliente(cliente_id, transportadora, codigo_rastreio, data_postagem, previsao_entrega, mensagem, mini_ids):
+    """Cria um envio e vincula várias minis ao mesmo rastreio."""
+    mini_ids = [m for m in (mini_ids or []) if m]
+    if not mini_ids:
+        return False, "Selecione pelo menos uma mini para despachar."
+
+    dados_envio = {
+        "cliente_id": cliente_id,
+        "transportadora": transportadora or "",
+        "codigo_rastreio": codigo_rastreio or "",
+        "data_postagem": str(data_postagem) if data_postagem else None,
+        "previsao_entrega": str(previsao_entrega) if previsao_entrega else None,
+        "mensagem": mensagem or "",
+    }
+
+    try:
+        resp = supabase.table("envios").insert(dados_envio).execute()
+        envio = resp.data[0] if resp.data else None
+        envio_id = envio.get("id") if envio else None
+
+        if not envio_id:
+            return False, "Envio criado, mas não consegui recuperar o ID para vincular as minis."
+
+        itens = [{"envio_id": envio_id, "mini_id": mini_id} for mini_id in mini_ids]
+        supabase.table("envio_itens").insert(itens).execute()
+        return True, f"Envio registrado com sucesso para {len(mini_ids)} mini(s)."
+    except Exception as e:
+        return False, f"Erro ao registrar envio: {e}"
+
+
+def link_rastreio_transportadora(transportadora, codigo_rastreio):
+    """Monta link de rastreio quando a transportadora é reconhecida."""
+    codigo = str(codigo_rastreio or "").strip()
+    transp = str(transportadora or "").strip().lower()
+
+    if not codigo:
+        return ""
+
+    if "correio" in transp:
+        return f"https://rastreamento.correios.com.br/app/index.php"
+
+    if "jadlog" in transp:
+        return "https://www.jadlog.com.br/jadlog/tracking"
+
+    return ""
+
+
+def render_card_envio_cliente(envio, nomes_minis):
+    """Card visual de envio usado na garagem do cliente e no admin."""
+    transportadora = limpar_campo_visual(envio.get("transportadora"), "-")
+    codigo = limpar_campo_visual(envio.get("codigo_rastreio"), "-")
+    data_postagem = formatar_data_br(envio.get("data_postagem"))
+    previsao = formatar_data_br(envio.get("previsao_entrega"))
+    mensagem = limpar_campo_visual(envio.get("mensagem"), "")
+    qtd = len(nomes_minis or [])
+    primeiros = nomes_minis[:8]
+    restante = max(0, qtd - len(primeiros))
+
+    itens_html = "".join(f"<li>{html.escape(str(n))}</li>" for n in primeiros)
+    if restante:
+        itens_html += f"<li>+ {restante} mini(s)</li>"
+
+    msg_html = f"<p><b>Mensagem:</b> {html.escape(mensagem)}</p>" if mensagem else ""
+
+    st.markdown(f"""
+    <div class="admin-work-card">
+        <h3>🚚 Envio despachado</h3>
+        <p><b>Transportadora:</b> {html.escape(transportadora)} • <b>Rastreio:</b> {html.escape(codigo)}</p>
+        <p><b>Postagem:</b> {html.escape(data_postagem)} • <b>Previsão:</b> {html.escape(previsao)} • <b>Itens:</b> {qtd}</p>
+        {msg_html}
+        <ul style="margin-bottom:0;color:#cbd5e1;font-weight:800;">{itens_html}</ul>
+    </div>
+    """, unsafe_allow_html=True)
+
+    link = link_rastreio_transportadora(transportadora, codigo)
+    if link:
+        st.link_button("🔎 Abrir rastreamento", link, use_container_width=True)
+
+
+def render_envios_cliente_garagem(cliente_id, minis_cliente):
+    """Mostra para o cliente os envios vinculados às minis dele."""
+    envios = buscar_envios_cliente(cliente_id)
+    if not envios:
+        return
+
+    envio_ids = [e.get("id") for e in envios if e.get("id")]
+    itens = buscar_itens_envios_por_envio_ids(envio_ids)
+    minis_por_id = {str(m.get("id")): m for m in (minis_cliente or [])}
+
+    st.markdown("### 📦 Seus envios")
+    st.caption("Acompanhe aqui as minis que já foram despachadas pelo admin.")
+
+    for envio in envios:
+        nomes = []
+        for item in itens:
+            if str(item.get("envio_id")) == str(envio.get("id")):
+                mini = minis_por_id.get(str(item.get("mini_id")))
+                if mini:
+                    nomes.append(limpar_campo_visual(mini.get("nome"), "Mini sem nome"))
+        render_card_envio_cliente(envio, nomes)
+
+
+def render_admin_centro_expedicao(usuario_cliente, minis_cliente):
+    """Bloco exclusivo do admin dentro da garagem do cliente para despachar várias minis de uma vez."""
+    cliente_id = usuario_cliente.get("id")
+    minis_cliente = minis_cliente or []
+    mapa_despachadas = mapa_envio_por_mini(minis_cliente)
+    minis_nao_despachadas = [m for m in minis_cliente if str(m.get("id")) not in mapa_despachadas]
+    minis_despachadas = [m for m in minis_cliente if str(m.get("id")) in mapa_despachadas]
+
+    st.markdown("""
+    <div class="admin-work-card">
+        <h3>🚚 Despachar minis deste cliente</h3>
+        <p>Preencha o rastreio uma única vez e selecione todas as minis que irão no mesmo pacote.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if not minis_nao_despachadas:
+        st.info("Todas as minis desta garagem já possuem despacho registrado.")
+    else:
+        with st.form(f"form_envio_cliente_{cliente_id}"):
+            c1, c2 = st.columns(2)
+            with c1:
+                transportadora = st.text_input("Transportadora", value="Correios", key=f"envio_transportadora_{cliente_id}")
+                codigo_rastreio = st.text_input("Código de rastreio", key=f"envio_codigo_{cliente_id}", placeholder="Ex: AA123456789BR")
+                data_postagem = st.date_input("Data de postagem", value=date.today(), format="DD/MM/YYYY", key=f"envio_postagem_{cliente_id}")
+            with c2:
+                previsao_entrega = st.date_input("Previsão de entrega", value=None, format="DD/MM/YYYY", key=f"envio_previsao_{cliente_id}")
+                mensagem = st.text_area("Mensagem opcional para o cliente", key=f"envio_msg_{cliente_id}", placeholder="Ex: Seu pacote foi postado hoje. Obrigado pela compra!")
+                selecionar_todas = st.checkbox("Selecionar todas as minis ainda não despachadas", value=True, key=f"envio_select_all_{cliente_id}")
+
+            st.markdown("#### Minis neste pacote")
+            selecionadas = []
+            for mini in minis_nao_despachadas:
+                mini_id = mini.get("id")
+                rotulo = f"{limpar_campo_visual(mini.get('nome'), 'Mini sem nome')} — {limpar_campo_visual(mini.get('marca'), '-')} — {money(mini.get('valor_estimado') or 0)}"
+                if st.checkbox(rotulo, value=selecionar_todas, key=f"envio_item_{cliente_id}_{mini_id}"):
+                    selecionadas.append(mini_id)
+
+            salvar_envio = st.form_submit_button("🚚 Despachar selecionadas", use_container_width=True)
+
+            if salvar_envio:
+                if not str(codigo_rastreio or "").strip():
+                    st.error("Informe o código de rastreio antes de despachar.")
+                elif not selecionadas:
+                    st.error("Selecione pelo menos uma mini para este envio.")
+                else:
+                    ok, msg = criar_envio_cliente(
+                        cliente_id,
+                        transportadora,
+                        codigo_rastreio,
+                        data_postagem,
+                        previsao_entrega,
+                        mensagem,
+                        selecionadas,
+                    )
+                    if ok:
+                        st.success(msg)
+                        atualizar_garagehub()
+                    else:
+                        st.error(msg)
+
+    envios = buscar_envios_cliente(cliente_id)
+    if envios:
+        envio_ids = [e.get("id") for e in envios if e.get("id")]
+        itens = buscar_itens_envios_por_envio_ids(envio_ids)
+        minis_por_id = {str(m.get("id")): m for m in minis_cliente}
+
+        with st.expander("📦 Histórico de envios deste cliente", expanded=False):
+            for envio in envios:
+                nomes = []
+                for item in itens:
+                    if str(item.get("envio_id")) == str(envio.get("id")):
+                        mini = minis_por_id.get(str(item.get("mini_id")))
+                        if mini:
+                            nomes.append(limpar_campo_visual(mini.get("nome"), "Mini sem nome"))
+                render_card_envio_cliente(envio, nomes)
+
+    if minis_despachadas:
+        st.caption(f"{len(minis_despachadas)} mini(s) desta garagem já possuem despacho registrado.")
+
+
 def cadastrar_mini(usuario_id, nome, marca, serie, ano, raridade, valor_pago, valor_estimado, foto_url,
                    status_pagamento="pendente", tipo_mini="compra", destaque_cliente="", data_pagamento_prevista=None, loja_mini_id=None):
     destaque_cliente = str(destaque_cliente or "")
@@ -2777,6 +3023,12 @@ def render_admin_garagem_cliente(usuario_cliente):
         st.info("Este cliente ainda não possui minis cadastrados. Use o bloco da Loja ou o bloco Manual/Migração acima para inserir minis nesta garagem.")
         return
 
+    render_admin_centro_expedicao(usuario_cliente, minis_cliente)
+
+    mapa_envios_minis_admin = mapa_envio_por_mini(minis_cliente)
+    envios_cliente_admin = buscar_envios_cliente(usuario_cliente.get("id"))
+    envios_admin_por_id = {str(e.get("id")): e for e in (envios_cliente_admin or [])}
+
     busca_admin = st.text_input(
         "Buscar mini deste cliente",
         placeholder="Digite nome, marca ou série...",
@@ -2806,6 +3058,8 @@ def render_admin_garagem_cliente(usuario_cliente):
         foto_atual = get_foto_item(mini)
         origem_atual = origem_operacional_mini(mini)
         origem_label = "Manual/Migração" if origem_atual == "manual" else "Loja/Protegida"
+        envio_id_mini_admin = mapa_envios_minis_admin.get(str(mini_id))
+        envio_mini_admin = envios_admin_por_id.get(str(envio_id_mini_admin), {}) if envio_id_mini_admin else {}
 
         # Título limpo do expander da garagem.
         # Removi emoji/HTML do início para evitar quebra visual no Streamlit.
@@ -2832,6 +3086,14 @@ def render_admin_garagem_cliente(usuario_cliente):
                 nova_foto = st.file_uploader("Trocar foto", type=["png", "jpg", "jpeg"], key=f"admin_foto_mini_{mini_id}")
 
             with col_form:
+                if envio_mini_admin:
+                    st.markdown(f"""
+                    <div class="user-info-item" style="margin-bottom:14px;">
+                        <small>🚚 DESPACHADA</small>
+                        <strong>{html.escape(limpar_campo_visual(envio_mini_admin.get('transportadora'), '-'))} • {html.escape(limpar_campo_visual(envio_mini_admin.get('codigo_rastreio'), '-'))}</strong>
+                    </div>
+                    """, unsafe_allow_html=True)
+
                 c1, c2 = st.columns(2)
 
                 with c1:
@@ -9175,6 +9437,8 @@ else:
 
             minis = buscar_minis(usuario["id"])
 
+            render_envios_cliente_garagem(usuario["id"], minis)
+
             if not minis:
                 st.info("Nenhuma mini cadastrada ainda.")
             else:
@@ -9294,6 +9558,10 @@ else:
                                         badge_html += f'<span class="badge-destaque">{html.escape(destaque_cliente)}</span>'
 
                                     st.markdown(badge_html, unsafe_allow_html=True)
+
+                                    envio_mini_cliente = mapa_envio_por_mini([mini]).get(str(mini.get("id")))
+                                    if envio_mini_cliente:
+                                        st.success("🚚 Mini despachada. Consulte o rastreio no bloco Seus envios acima.")
 
                                     if resumo_pv_cliente:
                                         st.markdown(f"""

@@ -1686,10 +1686,16 @@ def buscar_reservas_pre_venda(pre_venda_id=None, cliente_id=None):
 
 
 def quantidade_reservada_pre_venda(pre_venda_id):
+    """Conta somente reservas confirmadas pelo admin.
+
+    Interesse enviado pelo cliente NÃO baixa disponibilidade e NÃO esgota pré-venda.
+    A disponibilidade passa a ser consumida apenas quando o admin confirmar o interesse.
+    """
     reservas = buscar_reservas_pre_venda(pre_venda_id=pre_venda_id)
     total = 0
+    status_que_reservam = ["aguardando_sinal", "sinal_pago", "pago_total", "incluido_na_garagem"]
     for r in reservas:
-        if str(r.get("status") or "").lower() != "cancelado":
+        if str(r.get("status") or "").lower() in status_que_reservam:
             try:
                 total += int(r.get("quantidade") or 0)
             except Exception:
@@ -1704,11 +1710,23 @@ def quantidade_restante_pre_venda(pre_venda):
 
 
 def criar_reserva_pre_venda(pre_venda, cliente_id, quantidade):
+    """Registra apenas o INTERESSE do cliente.
+
+    Regra nova:
+    - cliente não reserva automaticamente;
+    - cliente apenas sinaliza interesse ao admin;
+    - estoque/disponibilidade só é consumido quando o admin confirmar.
+    """
     quantidade = max(1, int(quantidade or 1))
     restante = quantidade_restante_pre_venda(pre_venda)
 
     if quantidade > restante:
-        return False, f"Quantidade indisponível. Restam apenas {restante} unidade(s)."
+        return False, f"Quantidade indisponível para solicitar. Restam apenas {restante} unidade(s)."
+
+    reservas_cliente = buscar_reservas_pre_venda(pre_venda_id=pre_venda.get("id"), cliente_id=cliente_id)
+    for r in reservas_cliente:
+        if str(r.get("status") or "").lower() not in ["cancelado"]:
+            return False, "Você já sinalizou interesse nessa pré-venda. Aguarde o admin analisar."
 
     valor_total_unit = float(pre_venda.get("valor_total") or 0)
     valor_sinal_unit = float(pre_venda.get("valor_sinal") or 0)
@@ -1720,16 +1738,120 @@ def criar_reserva_pre_venda(pre_venda, cliente_id, quantidade):
         "valor_total": valor_total_unit * quantidade,
         "valor_sinal": valor_sinal_unit * quantidade,
         "valor_restante": max(0, (valor_total_unit - valor_sinal_unit) * quantidade),
-        "status": "aguardando_sinal"
+        "status": "interesse_enviado"
     }
 
     supabase.table("pre_venda_reservas").insert(dados).execute()
+
+    return True, "Interesse enviado ao admin. Aguarde a confirmação para virar reserva."
+
+
+def inserir_pre_venda_manual_na_garagem(pre_venda, cliente_id, quantidade, status_inicial="aguardando_sinal", data_pagamento_prevista=None, observacao_admin=""):
+    """Admin insere uma pré-venda diretamente na garagem do cliente.
+
+    Uso principal: pedidos feitos por WhatsApp, presencialmente ou pré-vendas já existentes.
+    O cliente não precisa clicar em reservar/interesse.
+    """
+    if not pre_venda:
+        return False, "Pré-venda inválida."
+
+    if not cliente_id:
+        return False, "Selecione um cliente."
+
+    quantidade = max(1, int(quantidade or 1))
+    restante = quantidade_restante_pre_venda(pre_venda)
+
+    if quantidade > restante:
+        return False, f"Quantidade indisponível. Restam apenas {restante} unidade(s)."
+
+    status_inicial = str(status_inicial or "aguardando_sinal").strip().lower()
+    if status_inicial not in ["aguardando_sinal", "sinal_pago", "pago_total"]:
+        status_inicial = "aguardando_sinal"
+
+    valor_total_unit = float(pre_venda.get("valor_total") or 0)
+    valor_sinal_unit = float(pre_venda.get("valor_sinal") or 0)
+
+    valor_total_reserva = valor_total_unit * quantidade
+    valor_sinal_reserva = valor_sinal_unit * quantidade
+
+    if status_inicial == "pago_total":
+        valor_sinal_reserva = valor_total_reserva
+
+    valor_restante = max(0, valor_total_reserva - valor_sinal_reserva)
+
+    dados_reserva = {
+        "pre_venda_id": pre_venda.get("id"),
+        "cliente_id": cliente_id,
+        "quantidade": quantidade,
+        "valor_total": valor_total_reserva,
+        "valor_sinal": valor_sinal_reserva,
+        "valor_restante": valor_restante,
+        "status": "incluido_na_garagem",
+    }
+
+    resp = supabase.table("pre_venda_reservas").insert(dados_reserva).execute()
+    reserva = resp.data[0] if resp.data else None
+    reserva_id = reserva.get("id") if reserva else ""
+
+    valor_unitario = valor_total_reserva / quantidade if quantidade else valor_total_unit
+    status_pagamento_mini = "pago" if status_inicial == "pago_total" else "pendente"
+
+    destaque_pre_venda = (
+        "Inserido manualmente pelo admin a partir de pré-venda GarageHub | "
+        f"Reserva_ID: {reserva_id} | "
+        f"Quantidade solicitada: {quantidade} | "
+        f"Valor unitário: {money(valor_unitario)} | "
+        f"Valor total da reserva: {money(valor_total_reserva)}"
+    )
+
+    if observacao_admin:
+        destaque_pre_venda += f" | Obs admin: {observacao_admin}"
+
+    cadastrar_mini(
+        cliente_id,
+        pre_venda.get("nome") or "Mini pré-venda",
+        pre_venda.get("marca") or "Hot Wheels",
+        pre_venda.get("serie") or "",
+        "",
+        "Comum",
+        valor_unitario,
+        valor_total_reserva,
+        pre_venda.get("foto_url") or "",
+        status_pagamento_mini,
+        "pre_venda",
+        destaque_pre_venda,
+        data_pagamento_prevista=data_pagamento_prevista,
+    )
 
     restante_depois = quantidade_restante_pre_venda(pre_venda)
     if restante_depois <= 0:
         atualizar_pre_venda(pre_venda.get("id"), {"status": "esgotada"})
 
-    return True, "Reserva criada com sucesso. Aguarde o admin confirmar o sinal/pagamento."
+    return True, f"Pré-venda inserida na garagem do cliente com {quantidade} unidade(s)."
+
+
+def confirmar_interesse_pre_venda(reserva, pre_venda):
+    """Admin transforma interesse em reserva real, consumindo a disponibilidade."""
+    if not reserva or not pre_venda:
+        return False, "Interesse ou pré-venda inválido."
+
+    status = str(reserva.get("status") or "").lower()
+    if status != "interesse_enviado":
+        return False, "Somente interesses pendentes podem ser confirmados."
+
+    qtd = int(reserva.get("quantidade") or 1)
+    restante = quantidade_restante_pre_venda(pre_venda)
+
+    if qtd > restante:
+        return False, f"Não há quantidade suficiente para confirmar. Restam {restante} unidade(s)."
+
+    atualizar_reserva_pre_venda(reserva.get("id"), {"status": "aguardando_sinal"})
+
+    restante_depois = quantidade_restante_pre_venda(pre_venda)
+    if restante_depois <= 0:
+        atualizar_pre_venda(pre_venda.get("id"), {"status": "esgotada"})
+
+    return True, "Interesse confirmado. Agora a reserva está aguardando sinal."
 
 
 def atualizar_reserva_pre_venda(reserva_id, dados):
@@ -1794,6 +1916,7 @@ def texto_status_pre_venda(status):
 
 def texto_status_reserva(status):
     mapa = {
+        "interesse_enviado": "Interesse enviado",
         "aguardando_sinal": "Aguardando sinal",
         "sinal_pago": "Sinal pago",
         "pago_total": "Pago total",
@@ -1807,7 +1930,7 @@ def render_pre_vendas_admin(clientes):
     st.markdown("""
     <div class="admin-work-card">
         <h3>🚧 Pré-venda avulsa</h3>
-        <p>Módulo separado da Loja. Crie cards esporádicos, controle reservas, sinal, pagamento total e inclusão na garagem do cliente.</p>
+        <p>Módulo separado da Loja. O admin cria a pré-venda, o cliente apenas sinaliza interesse e o admin confirma manualmente a reserva.</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1843,7 +1966,7 @@ def render_pre_vendas_admin(clientes):
         if st.button("🔄 Atualizar reservas", use_container_width=True, key="admin_refresh_pre_venda_reservas"):
             atualizar_garagehub()
     with col_refresh_2:
-        st.caption("Atualiza pré-vendas e reservas feitas pelos clientes, sem precisar apertar F5 no navegador.")
+        st.caption("Atualiza pré-vendas e interesses enviados pelos clientes, sem precisar apertar F5 no navegador.")
 
     try:
         pre_vendas = buscar_pre_vendas(apenas_ativas=False)
@@ -1887,7 +2010,7 @@ def render_pre_vendas_admin(clientes):
                         <div class="market-price"><small>Valor total</small><strong>{money(pv.get('valor_total') or 0)}</strong></div>
                         <div class="market-price"><small>Sinal</small><strong>{money(pv.get('valor_sinal') or 0)}</strong></div>
                         <div class="market-price"><small>Restante</small><strong>{money(valor_restante)}</strong></div>
-                        <div class="market-price"><small>Reservas</small><strong>{reservado}/{int(pv.get('quantidade_total') or 0)}</strong></div>
+                        <div class="market-price"><small>Confirmadas</small><strong>{reservado}/{int(pv.get('quantidade_total') or 0)}</strong></div>
                     </div>
                 </div>
             </div>
@@ -1937,11 +2060,105 @@ def render_pre_vendas_admin(clientes):
                         else:
                             st.warning("Marque confirmar exclusão.")
 
+                st.markdown("---")
+                st.markdown("#### ➕ Inserir esta pré-venda na garagem de um cliente")
+                st.caption("Use este bloco para vendas feitas pelo WhatsApp, grupo, presencialmente ou para pré-vendas já cadastradas. O cliente não precisa solicitar pelo app.")
+
+                clientes_disponiveis = [c for c in (clientes or []) if str(c.get("tipo") or "usuario").lower() != "admin"]
+                clientes_disponiveis = sorted(clientes_disponiveis, key=lambda c: str(c.get("nome") or "").lower())
+
+                if not clientes_disponiveis:
+                    st.info("Nenhum cliente disponível para inserir esta pré-venda.")
+                else:
+                    busca_cliente_manual = st.text_input(
+                        "Buscar cliente",
+                        key=f"pv_manual_busca_cliente_{pv_id}",
+                        placeholder="Digite nome ou e-mail do cliente..."
+                    ).strip().lower()
+
+                    clientes_filtrados = clientes_disponiveis
+                    if busca_cliente_manual:
+                        clientes_filtrados = [
+                            c for c in clientes_disponiveis
+                            if busca_cliente_manual in str(c.get("nome") or "").lower()
+                            or busca_cliente_manual in str(c.get("email") or "").lower()
+                        ]
+
+                    if not clientes_filtrados:
+                        st.warning("Nenhum cliente encontrado com esse filtro.")
+                    else:
+                        opcoes_clientes = {
+                            f"{c.get('nome') or 'Cliente sem nome'} — {c.get('email') or '-'}": c
+                            for c in clientes_filtrados
+                        }
+
+                        with st.form(f"form_pv_manual_garagem_{pv_id}"):
+                            m1, m2, m3 = st.columns(3)
+                            with m1:
+                                cliente_rotulo = st.selectbox(
+                                    "Cliente",
+                                    list(opcoes_clientes.keys()),
+                                    key=f"pv_manual_cliente_{pv_id}"
+                                )
+                                qtd_manual = st.number_input(
+                                    "Quantidade",
+                                    min_value=1,
+                                    max_value=max(1, int(restante or 0)),
+                                    value=1,
+                                    step=1,
+                                    key=f"pv_manual_qtd_{pv_id}"
+                                )
+                            with m2:
+                                status_manual_rotulo = st.selectbox(
+                                    "Status inicial",
+                                    ["Aguardando sinal", "Sinal pago", "Pago total"],
+                                    key=f"pv_manual_status_{pv_id}"
+                                )
+                                data_venc_manual = st.text_input(
+                                    "Data prevista de pagamento",
+                                    value=str(pv.get("data_prevista") or ""),
+                                    key=f"pv_manual_data_pagamento_{pv_id}",
+                                    placeholder="Ex: 30/08/2026"
+                                )
+                            with m3:
+                                obs_manual = st.text_area(
+                                    "Observação para esta inclusão",
+                                    key=f"pv_manual_obs_{pv_id}",
+                                    placeholder="Ex: pedido feito pelo WhatsApp"
+                                )
+                                st.metric("Disponível agora", f"{restante} unidade(s)")
+
+                            inserir_manual = st.form_submit_button("🚗 Inserir na garagem do cliente", use_container_width=True)
+
+                            if inserir_manual:
+                                cliente_escolhido = opcoes_clientes.get(cliente_rotulo)
+                                mapa_status_manual = {
+                                    "Aguardando sinal": "aguardando_sinal",
+                                    "Sinal pago": "sinal_pago",
+                                    "Pago total": "pago_total",
+                                }
+                                status_manual = mapa_status_manual.get(status_manual_rotulo, "aguardando_sinal")
+                                data_banco_manual = data_pagamento_para_banco(data_venc_manual)
+
+                                ok, msg = inserir_pre_venda_manual_na_garagem(
+                                    pv,
+                                    cliente_escolhido.get("id") if cliente_escolhido else None,
+                                    qtd_manual,
+                                    status_manual,
+                                    data_banco_manual,
+                                    obs_manual,
+                                )
+                                if ok:
+                                    st.success(msg)
+                                    atualizar_garagehub()
+                                else:
+                                    st.error(msg)
+
     st.divider()
-    st.subheader("Reservas de pré-venda")
+    st.subheader("Interesses e reservas de pré-venda")
 
     if not reservas:
-        st.info("Ainda não há reservas de pré-venda.")
+        st.info("Ainda não há interesses/reservas de pré-venda.")
         return
 
     pre_vendas_por_id = {str(pv.get("id")): pv for pv in pre_vendas}
@@ -2029,17 +2246,25 @@ def render_pre_vendas_admin(clientes):
             if editar_bloqueado:
                 st.caption("Reserva já incluída na garagem ou cancelada. Para alterar valores, faça antes de incluir/cancelar.")
 
-        a1, a2, a3, a4, a5 = st.columns(5)
+        a1, a2, a3, a4, a5, a6 = st.columns(6)
         with a1:
-            if st.button("🟡 Sinal pago", key=f"pv_sinal_pago_{r['id']}", disabled=status_reserva in ["incluido_na_garagem", "cancelado"]):
+            if st.button("✅ Confirmar interesse", key=f"pv_confirmar_interesse_{r['id']}", disabled=status_reserva != "interesse_enviado"):
+                ok, msg = confirmar_interesse_pre_venda(r, pv)
+                if ok:
+                    st.success(msg)
+                    atualizar_garagehub()
+                else:
+                    st.error(msg)
+        with a2:
+            if st.button("🟡 Sinal pago", key=f"pv_sinal_pago_{r['id']}", disabled=status_reserva not in ["aguardando_sinal"]):
                 atualizar_reserva_pre_venda(r["id"], {"status": "sinal_pago"})
                 atualizar_garagehub()
-        with a2:
-            if st.button("🟢 Pago total", key=f"pv_pago_total_{r['id']}", disabled=status_reserva in ["incluido_na_garagem", "cancelado"]):
+        with a3:
+            if st.button("🟢 Pago total", key=f"pv_pago_total_{r['id']}", disabled=status_reserva not in ["aguardando_sinal", "sinal_pago"]):
                 # Ao marcar pago total, garante que o restante fique zerado.
                 atualizar_reserva_pre_venda(r["id"], {"status": "pago_total", "valor_sinal": float(r.get("valor_total") or 0), "valor_restante": 0.0})
                 atualizar_garagehub()
-        with a3:
+        with a4:
             if st.button("🚗 Incluir garagem", key=f"pv_incluir_garagem_{r['id']}", disabled=status_reserva not in ["sinal_pago", "pago_total"]):
                 ok, msg = efetivar_reserva_pre_venda_na_garagem(r, pv)
                 if ok:
@@ -2047,24 +2272,25 @@ def render_pre_vendas_admin(clientes):
                     atualizar_garagehub()
                 else:
                     st.error(msg)
-        with a4:
+        with a5:
             if st.button("🔴 Cancelar", key=f"pv_cancelar_reserva_{r['id']}", disabled=status_reserva in ["incluido_na_garagem", "cancelado"]):
                 atualizar_reserva_pre_venda(r["id"], {"status": "cancelado"})
                 if str(pv.get("status") or "").lower() == "esgotada" and quantidade_restante_pre_venda(pv) > 0:
                     atualizar_pre_venda(pv.get("id"), {"status": "ativa"})
                 atualizar_garagehub()
-        with a5:
-            st.caption("Edite/salve o sinal antes de marcar sinal pago ou incluir na garagem.")
+        with a6:
+            st.caption("Fluxo: cliente envia interesse → admin confirma → sinal/pagamento → garagem.")
 
 
 def mensagem_status_reserva_cliente(status):
     status = str(status or "").lower()
     mapa = {
-        "aguardando_sinal": "Aguardando pagamento do sinal. Assim que o admin confirmar, o status será atualizado aqui.",
+        "interesse_enviado": "📨 Interesse enviado ao admin. Ainda não é reserva confirmada.",
+        "aguardando_sinal": "✅ Admin confirmou seu interesse. Agora aguarde as instruções do sinal/pagamento.",
         "sinal_pago": "✅ Sinal recebido e validado pelo admin. Sua pré-venda está garantida.",
         "pago_total": "✅ Pagamento total confirmado pelo admin. Aguarde a inclusão na garagem.",
         "incluido_na_garagem": "🚗 Mini incluída na sua garagem.",
-        "cancelado": "🔴 Reserva cancelada.",
+        "cancelado": "🔴 Solicitação cancelada.",
     }
     return mapa.get(status, "Status em acompanhamento pelo admin.")
 
@@ -2073,7 +2299,7 @@ def render_pre_vendas_cliente(usuario):
     st.markdown("""
     <div class="market-hero">
         <div class="market-title">🚧 Pré-venda</div>
-        <p>Reserve minis em pré-venda. O admin confirma o sinal/pagamento e depois inclui na sua garagem.</p>
+        <p>Veja as pré-vendas anunciadas e sinalize interesse ao admin. A reserva só é confirmada manualmente pelo admin.</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -2082,7 +2308,7 @@ def render_pre_vendas_cliente(usuario):
         if st.button("🔄 Atualizar status", use_container_width=True, key="cliente_refresh_pre_venda_status"):
             atualizar_garagehub()
     with col_refresh_2:
-        st.caption("Atualiza o status das suas reservas sem precisar apertar F5 no navegador.")
+        st.caption("Atualiza o status dos seus interesses e reservas sem precisar apertar F5 no navegador.")
 
     try:
         pre_vendas = buscar_pre_vendas(apenas_ativas=True)
@@ -2093,7 +2319,7 @@ def render_pre_vendas_cliente(usuario):
     minhas_reservas = buscar_reservas_pre_venda(cliente_id=usuario.get("id"))
 
     if minhas_reservas:
-        with st.expander("📌 Minhas reservas de pré-venda", expanded=True):
+        with st.expander("📌 Meus interesses e reservas de pré-venda", expanded=True):
             pre_vendas_por_id = {str(pv.get("id")): pv for pv in pre_vendas}
             for r in minhas_reservas:
                 pv = pre_vendas_por_id.get(str(r.get("pre_venda_id"))) or buscar_pre_venda_por_id(r.get("pre_venda_id")) or {}
@@ -2112,7 +2338,7 @@ def render_pre_vendas_cliente(usuario):
 <div class="user-head">
 <div>
 <div class="user-name">{html.escape(str(pv.get('nome') or 'Pré-venda'))}</div>
-<div class="user-email">Acompanhamento da sua reserva</div>
+<div class="user-email">Acompanhamento do seu interesse/reserva</div>
 </div>
 <div>
 <span class="market-tag {tag_class}">{html.escape(status_texto)}</span>
@@ -2131,7 +2357,7 @@ def render_pre_vendas_cliente(usuario):
 </div>"""
                 st.markdown(card_reserva_html, unsafe_allow_html=True)
     else:
-        st.info("Você ainda não possui reservas de pré-venda.")
+        st.info("Você ainda não sinalizou interesse em nenhuma pré-venda.")
 
     pre_vendas_visiveis = [pv for pv in pre_vendas if str(pv.get("status") or "").lower() in ["ativa", "esgotada"]]
 
@@ -2176,7 +2402,7 @@ def render_pre_vendas_cliente(usuario):
             continue
 
         qtd = st.number_input(
-            f"Quantidade para reservar — {pv.get('nome')}",
+            f"Quantidade de interesse — {pv.get('nome')}",
             min_value=1,
             max_value=max(1, int(restante or 1)),
             value=1,
@@ -2186,13 +2412,20 @@ def render_pre_vendas_cliente(usuario):
 
         c1, c2, c3 = st.columns(3)
         with c1:
-            st.metric("Total da reserva", money(valor_total * int(qtd or 1)))
+            st.metric("Total estimado", money(valor_total * int(qtd or 1)))
         with c2:
             st.metric("Sinal", money(valor_sinal * int(qtd or 1)))
         with c3:
             st.metric("Restante", money(valor_restante * int(qtd or 1)))
 
-        if st.button("🚧 Reservar pré-venda", key=f"cliente_reservar_pv_{pv.get('id')}", use_container_width=True):
+        ja_sinalizou = any(
+            str(r.get("pre_venda_id")) == str(pv.get("id")) and str(r.get("status") or "").lower() != "cancelado"
+            for r in (minhas_reservas or [])
+        )
+
+        if ja_sinalizou:
+            st.info("Você já sinalizou interesse nessa pré-venda. Aguarde o admin analisar.")
+        elif st.button("📨 Tenho interesse", key=f"cliente_reservar_pv_{pv.get('id')}", use_container_width=True):
             try:
                 pv_atualizada = buscar_pre_venda_por_id(pv.get("id")) or pv
                 ok, msg = criar_reserva_pre_venda(pv_atualizada, usuario.get("id"), int(qtd or 1))
@@ -2202,7 +2435,7 @@ def render_pre_vendas_cliente(usuario):
                 else:
                     st.error(msg)
             except Exception as e:
-                st.error(f"Erro ao criar reserva: {e}")
+                st.error(f"Erro ao enviar interesse: {e}")
 
 
 # =========================

@@ -786,6 +786,22 @@ def resetar_senha_cliente(usuario_id):
 
 
 
+def atualizar_dados_perfil_cliente(usuario_id, dados):
+    """Atualiza dados editáveis do próprio cliente sem mexer em admin, loja, garagem ou pedidos."""
+    dados_limpos = {}
+
+    for campo in ["telefone", "cidade", "estado", "instagram", "foto_perfil_url", "foto_url"]:
+        if campo in dados:
+            valor = dados.get(campo)
+            dados_limpos[campo] = str(valor).strip() if valor is not None else ""
+
+    if not dados_limpos:
+        return
+
+    supabase.table("usuarios").update(dados_limpos).eq("id", usuario_id).execute()
+
+
+
 def status_mini(mini):
     return str(mini.get("status_pagamento") or "").strip().lower()
 
@@ -3434,6 +3450,138 @@ def render_admin_garagem_cliente(usuario_cliente):
 # =========================
 # PERFIL PREMIUM GARAGEHUB
 # =========================
+
+# =========================
+# MEU PERFIL / ALTERAR SENHA CLIENTE
+# =========================
+def render_meu_perfil_cliente(usuario):
+    """Permite ao cliente atualizar seus dados e trocar a própria senha."""
+    usuario_atual = buscar_usuario_por_id(usuario.get("id")) or usuario
+
+    st.markdown("""
+    <div class="admin-work-card">
+        <h3>👤 Meu perfil</h3>
+        <p>Atualize seus dados de contato, foto e senha de acesso à GarageHub.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.expander("✏️ Atualizar meus dados", expanded=True):
+        with st.form(f"form_meu_perfil_{usuario_atual.get('id')}"):
+            c1, c2 = st.columns(2)
+
+            with c1:
+                telefone = st.text_input(
+                    "Telefone / WhatsApp",
+                    value=str(usuario_atual.get("telefone") or ""),
+                    key=f"perfil_telefone_{usuario_atual.get('id')}"
+                )
+                cidade = st.text_input(
+                    "Cidade",
+                    value=str(usuario_atual.get("cidade") or ""),
+                    key=f"perfil_cidade_{usuario_atual.get('id')}"
+                )
+                estado = st.text_input(
+                    "Estado",
+                    value=str(usuario_atual.get("estado") or ""),
+                    key=f"perfil_estado_{usuario_atual.get('id')}"
+                )
+
+            with c2:
+                instagram_atual = str(usuario_atual.get("instagram") or "")
+                instagram = st.text_input(
+                    "Instagram",
+                    value=instagram_atual,
+                    placeholder="@seuinstagram",
+                    key=f"perfil_instagram_{usuario_atual.get('id')}"
+                )
+                foto_perfil = st.file_uploader(
+                    "Nova foto de perfil (opcional)",
+                    type=["jpg", "jpeg", "png"],
+                    key=f"perfil_foto_upload_{usuario_atual.get('id')}"
+                )
+                st.caption("Se não escolher uma nova foto, a foto atual será mantida.")
+
+            salvar_perfil = st.form_submit_button("💾 Salvar dados do perfil", use_container_width=True)
+
+            if salvar_perfil:
+                try:
+                    dados_update = {
+                        "telefone": telefone,
+                        "cidade": cidade,
+                        "estado": estado,
+                        "instagram": instagram,
+                    }
+
+                    if foto_perfil is not None:
+                        foto_url = upload_perfil_avatar(
+                            foto_perfil,
+                            "perfis",
+                            f"cliente_perfil_{usuario_atual.get('id')}"
+                        )
+                        dados_update["foto_perfil_url"] = foto_url
+                        dados_update["foto_url"] = foto_url
+
+                    atualizar_dados_perfil_cliente(usuario_atual.get("id"), dados_update)
+                    usuario_recarregado = buscar_usuario_por_id(usuario_atual.get("id")) or usuario_atual
+                    st.session_state["usuario"] = usuario_recarregado
+                    st.success("Perfil atualizado com sucesso.")
+                    atualizar_garagehub()
+                except Exception as e:
+                    st.error(f"Erro ao atualizar perfil: {e}")
+
+    with st.expander("🔒 Alterar minha senha", expanded=False):
+        with st.form(f"form_alterar_senha_{usuario_atual.get('id')}"):
+            senha_atual = st.text_input(
+                "Senha atual",
+                type="password",
+                key=f"senha_atual_cliente_{usuario_atual.get('id')}"
+            )
+            nova_senha = st.text_input(
+                "Nova senha",
+                type="password",
+                key=f"nova_senha_cliente_{usuario_atual.get('id')}"
+            )
+            confirmar_senha = st.text_input(
+                "Confirmar nova senha",
+                type="password",
+                key=f"confirmar_senha_cliente_{usuario_atual.get('id')}"
+            )
+
+            salvar_senha = st.form_submit_button("🔐 Salvar nova senha", use_container_width=True)
+
+            if salvar_senha:
+                try:
+                    usuario_fresco = buscar_usuario_por_id(usuario_atual.get("id")) or usuario_atual
+                    senha_banco = str(usuario_fresco.get("senha") or "")
+
+                    if not senha_atual or not nova_senha or not confirmar_senha:
+                        st.error("Preencha todos os campos de senha.")
+                        return
+
+                    if senha_atual != senha_banco:
+                        st.error("Senha atual incorreta.")
+                        return
+
+                    if len(nova_senha) < 4:
+                        st.error("A nova senha precisa ter pelo menos 4 caracteres.")
+                        return
+
+                    if nova_senha != confirmar_senha:
+                        st.error("A confirmação da nova senha não confere.")
+                        return
+
+                    if nova_senha == senha_atual:
+                        st.warning("A nova senha precisa ser diferente da senha atual.")
+                        return
+
+                    definir_nova_senha(usuario_atual.get("id"), nova_senha)
+                    usuario_fresco["senha"] = nova_senha
+                    st.session_state["usuario"] = usuario_fresco
+                    st.success("Senha alterada com sucesso. Use a nova senha no próximo login.")
+                    atualizar_garagehub()
+                except Exception as e:
+                    st.error(f"Erro ao alterar senha: {e}")
+
 def render_perfil_premium(usuario, minis_usuario):
     total_minis = len(minis_usuario or [])
     valor_total = sum(float(m.get("valor_estimado") or 0) for m in (minis_usuario or []))
@@ -9626,6 +9774,7 @@ else:
         with aba_perfil_cliente:
             minis_perfil = buscar_minis(usuario["id"])
             render_perfil_publico(usuario, minis_perfil)
+            render_meu_perfil_cliente(usuario)
             st.markdown('<div class="pro-grid"><div class="pro-card"><h3>❤️ Favoritos</h3><p>Preparado para salvar minis favoritas da loja.</p></div><div class="pro-card"><h3>🏆 Ranking pessoal</h3><p>Mostra posição e conquistas do colecionador.</p></div><div class="pro-card"><h3>🔗 Compartilhar</h3><p>Base para tornar a coleção pública.</p></div></div>', unsafe_allow_html=True)
 
         # =========================

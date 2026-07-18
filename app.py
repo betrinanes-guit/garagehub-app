@@ -4074,6 +4074,8 @@ def render_primeiro_acesso(usuario):
 
         usuario["senha"] = nova_1
 
+        # Limpa o fluxo temporário de primeiro acesso/recuperação.
+        st.session_state.pop("usuario_primeiro_acesso", None)
         st.session_state["usuario"] = usuario
 
         st.success("🔥 Senha criada com sucesso!")
@@ -8156,6 +8158,25 @@ else:
 # =========================
 # LOGIN / CADASTRO
 # =========================
+
+# Fluxo de primeiro acesso / recuperação de senha.
+# "Esqueci minha senha" grava usuario_primeiro_acesso na sessão e faz rerun.
+# Este bloco captura esse estado antes de renderizar a tela normal de login.
+if st.session_state.usuario is None and st.session_state.get("usuario_primeiro_acesso"):
+    usuario_recuperacao = st.session_state.get("usuario_primeiro_acesso")
+
+    _l, acesso_col, _r = st.columns([0.85, 1.15, 0.85])
+    with acesso_col:
+        render_primeiro_acesso(usuario_recuperacao)
+
+        if st.button("⬅️ Voltar ao login", key="btn_voltar_login_recuperacao", use_container_width=True):
+            st.session_state.pop("usuario_primeiro_acesso", None)
+            atualizar_garagehub()
+
+    # Impede que a tela normal de login seja desenhada junto com a criação de senha.
+    st.stop()
+
+
 if st.session_state.usuario is None:
     aba_login, aba_cadastro = st.tabs(["Entrar", "Criar conta"])
 
